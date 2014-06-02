@@ -29,3 +29,12 @@ Viewer_hight.py - цифровое обозначение высот
 
 anim_pencil.py - анимирует нарисованное карандашом. http://www.youtube.com/watch?v=Cpnv6feClFQ
 
+for_export_AssettoCorsa.py - дополняет экспорт материалами
+
+materials.py - копирует материалы одного объекта на другой через JSON-файл
+
+mesh_gf_manager_13.py - наш незабываемый Grid Fill Manager
+
+obj_analiz_1D.py - переименование объектов в соответствии с информацией о поликах
+
+sverchok.py - зародыш
