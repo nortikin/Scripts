@@ -38,3 +38,5 @@ mesh_gf_manager_13.py - наш незабываемый Grid Fill Manager
 obj_analiz_1D.py - переименование объектов в соответствии с информацией о поликах
 
 sverchok.py - зародыш
+
+Auto_Perspective.py - автоматическое переключение перспективы. Active buttons: Numpad 1,3,7 - ORTHO and mouse_middlebutton - PERSP
