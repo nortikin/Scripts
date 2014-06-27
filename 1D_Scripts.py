@@ -21,14 +21,16 @@
 bl_info = {
     "name": "1D_Scripts",                     
     "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design)",
-    "version": (0, 2, 24),
+    "version": (0, 2, 25),
     "blender": (2, 6, 8),
     "location": "View3D > Toolbar",
     "category": "Mesh"
 }  
 
 # http://dl.dropboxusercontent.com/u/59609328/Blender-Rus/1D_Scripts.py
+
 import bpy,bmesh, mathutils, math
+from mathutils import Vector
 
 
 def find_index_of_selected_vertex(mesh):  
@@ -937,6 +939,132 @@ def GetStoreVecLength():
     return vec.length
 
 
+def crosspols():
+    config = bpy.context.window_manager.paul_manager
+    obj = bpy.context.active_object
+    if obj.type != 'MESH':
+        return
+    
+    bpy.ops.object.mode_set(mode='OBJECT')  
+    bpy.ops.object.mode_set(mode='EDIT')  
+    bpy.ops.mesh.select_mode(type='FACE') 
+    
+    me = obj.data
+    
+    
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    
+    P1 = me.polygons[bm.faces.active.index]
+    pols = [p.index for p in me.polygons if p.select and p.index!= P1.index]
+    sel_edges = []
+    sel_verts = []
+    vts_all = [v for v in bm.verts if v.select and v.index not in P1.vertices]
+    eds_all = [e for e in bm.edges if e.select and e.verts[0].index not in P1.vertices \
+                                               and e.verts[1].index not in P1.vertices]
+    
+    if not config.filter_verts_top and not config.filter_verts_bottom and not config.filter_edges:
+        p1_co = me.vertices[P1.vertices[0]].co
+        p1_no = P1.normal
+        for pol in pols:
+            P2 = me.polygons[pol]
+            p2_co = me.vertices[P2.vertices[0]].co
+            p2_no = P2.normal
+            
+            cross_line = mathutils.geometry.intersect_plane_plane(p1_co, p1_no, p2_co, p2_no)
+            points = []
+            split_ed = []
+            for idx, edg in enumerate(P2.edge_keys):
+                pt_a = me.vertices[edg[0]].co
+                pt_b = me.vertices[edg[1]].co
+                cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, p1_co, p1_no)
+                if cross_pt:
+                    pose_pt = mathutils.geometry.intersect_point_line(cross_pt, pt_a, pt_b)
+                    if pose_pt[1]<=1 and pose_pt[1]>=0:
+                        points.append(pose_pt[0])
+                        split_ed.append(idx)
+                        
+                
+            if len(points)==2:
+                bpy.ops.mesh.select_mode(type='VERT') 
+                if not config.SPLIT:
+                    v1=bm.verts.new(points[0])
+                    v2=bm.verts.new(points[1])
+                    bm.verts.index_update() 
+                    edge = (v1,v2)
+                    edg_i = bm.edges.new(edge)
+                    sel_edges.append(edg_i)
+                else:
+                    """ Функция позаимствована из адона Сверчок нод Bisect """
+                    verts4cut = vts_all
+                    edges4cut = eds_all
+                    faces4cut = [fa for fa in bm.faces if fa.index in pols]
+                    edges4cut_idx = [ed.index for ed in eds_all]
+                    
+                    geom_in = verts4cut + edges4cut + faces4cut
+                    res = bmesh.ops.bisect_plane(bm, geom=geom_in, dist=0.00001,
+                                                 plane_co=p1_co, plane_no=p1_no, use_snap_center=False,
+                                                 clear_outer=config.outer_clear, clear_inner=config.inner_clear)
+                    
+                    fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
+                                                                if isinstance(e, bmesh.types.BMEdge)])
+                    
+                    sel_edges = [e for e in fres['edges'] if e.index not in edges4cut_idx]
+                    
+                    # this needs work function with solid gemometry
+                    if config.fill_cuts:
+                        fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
+                                                                    if isinstance(e, bmesh.types.BMEdge)])
+                        bmesh.ops.edgeloop_fill(bm, edges=fres['edges'])
+
+                    bm.verts.index_update()
+                    bm.edges.index_update()
+                    bm.faces.index_update()
+                    break
+           
+    if config.filter_verts_top or config.filter_verts_bottom:
+        bpy.ops.mesh.select_mode(type='VERT') 
+        p1_co = me.vertices[P1.vertices[0]].co
+        p1_no = P1.normal
+        for v in vts_all:
+            res = mathutils.geometry.distance_point_to_plane(v.co, p1_co, p1_no)
+            if res>=0:
+                if config.filter_verts_top:
+                    sel_verts.append(v)
+            else:
+                if config.filter_verts_bottom:
+                    sel_verts.append(v)
+            
+    if config.filter_edges and not config.filter_verts_top and not config.filter_verts_bottom:
+        bpy.ops.mesh.select_mode(type='EDGE') 
+        p1_co = me.vertices[P1.vertices[0]].co
+        p1_no = P1.normal
+        print(eds_all)
+        for idx, edg in enumerate(eds_all):
+            pt_a = edg.verts[0].co
+            pt_b = edg.verts[1].co
+            cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, p1_co, p1_no)
+            if cross_pt:
+                pose_pt = mathutils.geometry.intersect_point_line(cross_pt, pt_a, pt_b)
+                if pose_pt[1]<=1 and pose_pt[1]>=0:
+                    sel_edges.append(edg)
+            
+    bm.edges.index_update()
+    for v in bm.verts:
+        v.select_set(False)
+        bm.select_flush(False)
+    for ed in sel_edges:
+        ed.select=True
+    for ed in sel_verts:
+        ed.select=True
+        
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bm.to_mesh(me)       
+    me.update()   
+    bm.free()
+    bpy.ops.object.mode_set(mode='EDIT')  
+
+
 class LayoutSSPanel(bpy.types.Panel):
     def axe_select(self, context):
         axes = ['X','Y','Z']
@@ -950,9 +1078,9 @@ class LayoutSSPanel(bpy.types.Panel):
     bl_idname = "Paul_Operator"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'TOOLS'
+    bl_category = '1D'
     #bl_context = "mesh_edit"
     bl_options = {'DEFAULT_CLOSED'}  
-    bl_category = '1D'
     
     bpy.types.Scene.AxesProperty = bpy.props.EnumProperty(items=axe_select)
     bpy.types.Scene.ProjectsProperty = bpy.props.EnumProperty(items=project_select)
@@ -1079,6 +1207,53 @@ class LayoutSSPanel(bpy.types.Panel):
             split.scale_y = 1.5
             split.operator("mesh.align_operator", text = 'Flip').type_op = 6
             split.operator("mesh.align_operator", text = '3D Match').type_op = 5
+        
+        split = col.split()
+        if lt.disp_cp:
+            split.prop(lt, "disp_cp", text="Polycross", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_cp", text="Polycross", icon='RIGHTARROW')
+        
+        if lt.disp_cp:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            split = row.split()
+            if lt.disp_cp_project:
+                split.prop(lt, "disp_cp_project", text="Project active", icon='DOWNARROW_HLT')
+            else:
+                split.prop(lt, "disp_cp_project", text="Project active", icon='RIGHTARROW')
+            
+            if lt.disp_cp_project:
+                row = col_top.row(align=True)
+                split = row.split(0.5, True)
+                split.scale_y = 1.5
+                split.operator("mesh.polycross", text = 'Section').type_op = 0 # section
+                split.operator("mesh.polycross", text = 'Cut').type_op = 1 # cross
+                row = col_top.row(align=True)
+                row.prop(lt,"fill_cuts", text="fill cut")
+                row = col_top.row(align=True)
+                row.prop(lt,"outer_clear", text="remove front")
+                row = col_top.row(align=True)
+                row.prop(lt,"inner_clear", text="remove bottom")
+                
+            row = col_top.row(align=True)
+            split = row.split()
+            if lt.disp_cp_filter:
+                split.prop(lt, "disp_cp_filter", text="Selection Filter", icon='DOWNARROW_HLT')
+            else:
+                split.prop(lt, "disp_cp_filter", text="Selection Filter", icon='RIGHTARROW')
+            
+            if lt.disp_cp_filter:
+                row = col_top.row(align=True)
+                row.scale_y = 1.5
+                row.operator("mesh.polycross", text = 'to SELECT').type_op = 0 # section
+                row = col_top.row(align=True)
+                row.prop(lt,"filter_edges", text="Filter Edges")
+                row = col_top.row(align=True)
+                row.prop(lt,"filter_verts_top", text="Filter Top")
+                row = col_top.row(align=True)
+                row.prop(lt,"filter_verts_bottom", text="Filter Bottom")
             
         
 class SSOperator(bpy.types.Operator):
@@ -1086,13 +1261,35 @@ class SSOperator(bpy.types.Operator):
     bl_idname = "mesh.simple_scale_operator"
     bl_label = "SScale operator"
     bl_options = {'REGISTER', 'UNDO'} 
-
+    
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
         main_ss(context)
+        return {'FINISHED'}
+
+
+class CrossPolsOperator(bpy.types.Operator):
+    bl_idname = "mesh.polycross"
+    bl_label = "Polycross"
+    bl_options = {'REGISTER', 'UNDO'} 
+    
+    type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        lt = bpy.context.window_manager.paul_manager
+        if self.type_op == 0:
+            lt.SPLIT = False
+        elif self.type_op == 1:
+            lt.SPLIT = True
+        
+        crosspols()
         return {'FINISHED'}
 
 
@@ -1286,6 +1483,17 @@ class paul_managerProps(bpy.types.PropertyGroup):
     shift_lockZ = bpy.props.BoolProperty(name = 'shift_lockZ', default = False)
     shift_copy = bpy.props.BoolProperty(name = 'shift_copy', default = False)
     shift_local = bpy.props.BoolProperty(name = 'shift_local', default = False)
+    
+    SPLIT = bpy.props.BoolProperty(name = 'SPLIT', default = False)
+    inner_clear = bpy.props.BoolProperty(name = 'inner_clear', default = False)
+    outer_clear = bpy.props.BoolProperty(name = 'outer_clear', default = False)
+    fill_cuts = bpy.props.BoolProperty(name = 'fill_cuts', default = False)
+    filter_edges = bpy.props.BoolProperty(name = 'filter_edges', default = False)
+    filter_verts_top = bpy.props.BoolProperty(name = 'filter_verts_top', default = False)
+    filter_verts_bottom = bpy.props.BoolProperty(name = 'filter_verts_bottom', default = False)
+    disp_cp = bpy.props.BoolProperty(name = 'disp_cp', default = False)
+    disp_cp_project = bpy.props.BoolProperty(name = 'disp_cp_project', default = False)
+    disp_cp_filter = bpy.props.BoolProperty(name = 'disp_cp_filter', default = False)
 
 
 class MessageOperator(bpy.types.Operator):
@@ -1317,7 +1525,7 @@ def print_error(message):
 
 
 
-classes = [SSOperator, SpreadOperator, AlignOperator, LayoutSSPanel, MessageOperator, \
+classes = [CrossPolsOperator, SSOperator, SpreadOperator, AlignOperator, LayoutSSPanel, MessageOperator, \
     OffsetOperator, paul_managerProps]
 
 
@@ -1348,6 +1556,13 @@ def register():
     bpy.context.window_manager.paul_manager.display_3dmatch = False
     bpy.context.window_manager.paul_manager.flip_match = False
     bpy.context.window_manager.paul_manager.variant = 0
+    bpy.context.window_manager.paul_manager.SPLIT = False
+    bpy.context.window_manager.paul_manager.inner_clear = False
+    bpy.context.window_manager.paul_manager.outer_clear = False
+    bpy.context.window_manager.paul_manager.fill_cuts = False
+    bpy.context.window_manager.paul_manager.filter_edges = False
+    bpy.context.window_manager.paul_manager.filter_verts_top = False
+    bpy.context.window_manager.paul_manager.filter_verts_bottom = False
     
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name='offset', space_type='VIEW_3D')
