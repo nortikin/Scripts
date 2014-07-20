@@ -21,7 +21,7 @@
 bl_info = {
     "name": "1D_Scripts",                     
     "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design)",
-    "version": (0, 2, 25),
+    "version": (0, 3, 8),
     "blender": (2, 6, 8),
     "location": "View3D > Toolbar",
     "category": "Mesh"
@@ -32,6 +32,11 @@ bl_info = {
 import bpy,bmesh, mathutils, math
 from mathutils import Vector
 
+list_z = []
+mats_idx = []
+list_f = []
+maloe = 1e-5
+steps_smoose = 0
 
 def find_index_of_selected_vertex(mesh):  
     selected_verts = [i.index for i in mesh.vertices if i.select]  
@@ -641,7 +646,32 @@ def main_align():
     return True
         
 
-def main_spread(context, mode):
+def main_spread(context, mode, influe):
+    conf = bpy.context.window_manager.paul_manager
+    
+    if conf.shape_spline and influe<51:
+        return main_spline(context, mode, influe/50)
+    elif conf.shape_spline and influe<101:
+        if not conf.spline_Bspline2 or main_spline(context, mode, (100-influe)/50):
+            return main_B_spline_2(context, mode, (influe-50)/50)
+        else:
+            return False
+    elif conf.shape_spline and influe<151:
+        if not conf.spline_Bspline2 or main_B_spline_2(context, mode, (150-influe)/50):
+            return main_B_spline(context, mode, (influe-100)/50)
+        else:
+            return False
+    elif conf.shape_spline and influe<201:
+        if not conf.spline_Bspline2 or main_B_spline(context, mode, (200-influe)/50):
+            return main_Basier_mid(context, mode, (influe-150)/50)
+        else:
+            return False
+    elif conf.shape_spline and influe>200:
+        if conf.spline_Bspline2:
+            return main_Basier_mid(context, mode, (250-influe)/50)
+        else:
+            return False
+    
     bpy.ops.object.mode_set(mode='OBJECT') 
     bpy.ops.object.mode_set(mode='EDIT') 
     
@@ -939,6 +969,43 @@ def GetStoreVecLength():
     return vec.length
 
 
+def select_v_on_plane():
+    config = bpy.context.window_manager.paul_manager
+    obj = bpy.context.active_object
+    if obj.type != 'MESH':
+        return
+    
+    bpy.ops.object.mode_set(mode='OBJECT')  
+    bpy.ops.object.mode_set(mode='EDIT')  
+    bpy.ops.mesh.select_mode(type='VERT') 
+    
+    me = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    
+    P1 = me.polygons[bm.faces.active.index]
+    pols = [p.index for p in me.polygons if p.select and p.index!= P1.index]
+    vts_all = [v for v in bm.verts if v.select and v.index not in P1.vertices]
+    p1_co = me.vertices[P1.vertices[0]].co
+    p1_no = P1.normal
+    dist_max = bpy.context.tool_settings.double_threshold
+    
+    for v in bm.verts:
+        v.select_set(False)
+        bm.select_flush(False)
+    
+    for p2 in vts_all:
+        dist = abs(mathutils.geometry.distance_point_to_plane(p2.co, p1_co, p1_no))
+        if dist<=dist_max:
+            p2.select = True
+            
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bm.to_mesh(me)       
+    me.update()   
+    bm.free()
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+
 def crosspols():
     config = bpy.context.window_manager.paul_manager
     obj = bpy.context.active_object
@@ -1039,7 +1106,6 @@ def crosspols():
         bpy.ops.mesh.select_mode(type='EDGE') 
         p1_co = me.vertices[P1.vertices[0]].co
         p1_no = P1.normal
-        print(eds_all)
         for idx, edg in enumerate(eds_all):
             pt_a = edg.verts[0].co
             pt_b = edg.verts[1].co
@@ -1063,6 +1129,1061 @@ def crosspols():
     me.update()   
     bm.free()
     bpy.ops.object.mode_set(mode='EDIT')  
+
+
+def main_spline(context, mode, influe):
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    cou_vs = len(verts) - 1
+    if verts != None and cou_vs>0:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        
+        if len(extreme_vs) != 2:
+            print_error('Single Loop only')
+            print('Error: 01 simple_spline')
+            return False
+        
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        all_vts_sort_x = [me.vertices[i].co.x for i in sort_list]
+        all_vts_sort_y = [me.vertices[i].co.y for i in sort_list]
+        all_vts_sort_z = [me.vertices[i].co.z for i in sort_list]
+        
+        max_p = [max(all_vts_sort_x), max(all_vts_sort_y), max(all_vts_sort_z)]
+        min_p = [min(all_vts_sort_x), min(all_vts_sort_y), min(all_vts_sort_z)]
+        diap_p = list(map(lambda a,b: a-b, max_p, min_p))
+        
+        if len(sort_list) != len(verts):
+            print_error('Incoherent loop')
+            print('Error: 020 simple_spline')
+            return False
+        
+        list_length = []
+        sum_length = 0.0
+        for sl in range(cou_vs):
+            subb = me.vertices[sort_list[sl+1]].co-me.vertices[sort_list[sl]].co
+            sum_length += subb.length
+            list_length.append(sum_length)
+        
+        list_koeff = []
+        for sl in range(cou_vs):
+            tmp = list_length[sl]/sum_length
+            list_koeff.append(tmp)
+        
+        bpy.ops.object.mode_set(mode='OBJECT') 
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        
+        pa_idx = bm_vert_active_get(bm)[0]
+        if pa_idx==None:
+            print_error('Active vert is not detected')
+            print('Error: 030 simple_spline')
+            return False
+        
+        pa_sort = sort_list.index(pa_idx)
+        if pa_sort == 0: pa_sort = 1
+        pa_perc = list_koeff[pa_sort-1]
+        p0_ = me.vertices[sort_list[0]].co
+        p1_ = me.vertices[pa_idx].co
+        p2_ = me.vertices[sort_list[-1]].co
+        
+        if mode[3]:
+            l = len(list_koeff)
+            d = 1/l
+            list_koeff = list(map(lambda n: d*n, list(range(1,l+1))))
+        
+        if mode[0]:
+            all_vts_sort = [me.vertices[i].co.x for i in sort_list]
+            p0 = p0_.x
+            p1 = p1_.x - p0
+            p2 = p2_.x - p0
+            
+            t = pa_perc
+            if p1==0 or p1==p2:
+                new_vts = list(map(lambda t: p2*t**2, list_koeff))
+            else:
+                b = (p1-pa_perc**2*p2)/(2*pa_perc*(1-pa_perc)+1e-8)
+                new_vts = list(map(lambda t: 2*b*t*(1-t)+p2*t**2, list_koeff))
+            
+            for idx in range(cou_vs):
+                me.vertices[sort_list[idx+1]].co.x += (new_vts[idx]+p0-me.vertices[sort_list[idx+1]].co.x)*influe
+
+        if mode[1]:
+            all_vts_sort = [me.vertices[i].co.y for i in sort_list]
+            p0 = p0_.y
+            p1 = p1_.y - p0
+            p2 = p2_.y - p0
+            
+            b = (p1-pa_perc**2*p2)/(2*pa_perc*(1-pa_perc)+1e-8)
+            new_vts = list(map(lambda t: 2*b*t*(1-t)+p2*t**2, list_koeff))
+            
+            for idx in range(cou_vs):
+                me.vertices[sort_list[idx+1]].co.y += (new_vts[idx]+p0-me.vertices[sort_list[idx+1]].co.y)*influe
+            
+        if mode[2]:
+            all_vts_sort = [me.vertices[i].co.z for i in sort_list]
+            p0 = p0_.z
+            p1 = p1_.z - p0
+            p2 = p2_.z - p0
+            
+            b = (p1-pa_perc**2*p2)/(2*pa_perc*(1-pa_perc)+1e-8)
+            new_vts = list(map(lambda t: 2*b*t*(1-t)+p2*t**2, list_koeff))
+            
+            for idx in range(cou_vs):
+                me.vertices[sort_list[idx+1]].co.z += (new_vts[idx]+p0-me.vertices[sort_list[idx+1]].co.z)*influe
+
+        me.update()   
+        bm.free() 
+        
+        bpy.ops.object.mode_set(mode='EDIT')  
+            
+    return True
+
+
+def main_B_spline(context, mode, influe):
+    global steps_smoose
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    cou_vs = len(verts) - 1
+    if verts != None and cou_vs>0:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        
+        if len(extreme_vs) != 2:
+            print_error('Single Loop only')
+            print('Error: 01 B_spline')
+            return False
+        
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        all_vts_sort_x = [me.vertices[i].co.x for i in sort_list]
+        all_vts_sort_y = [me.vertices[i].co.y for i in sort_list]
+        all_vts_sort_z = [me.vertices[i].co.z for i in sort_list]
+        
+        max_p = [max(all_vts_sort_x), max(all_vts_sort_y), max(all_vts_sort_z)]
+        min_p = [min(all_vts_sort_x), min(all_vts_sort_y), min(all_vts_sort_z)]
+        diap_p = list(map(lambda a,b: a-b, max_p, min_p))
+        
+        if len(sort_list) != len(verts):
+            print_error('Incoherent loop')
+            print('Error: 020 B_spline')
+            return False
+        
+        list_length = []
+        sum_length = 0.0
+        for sl in range(cou_vs-2):
+            subb = me.vertices[sort_list[sl+2]].co-me.vertices[sort_list[sl+1]].co
+            sum_length += subb.length
+            list_length.append(sum_length)
+        
+        list_koeff = []
+        for sl in range(cou_vs-2):
+            tmp = list_length[sl]/sum_length
+            list_koeff.append(tmp)
+        
+        bpy.ops.object.mode_set(mode='OBJECT') 
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        
+        pa_idx = bm_vert_active_get(bm)[0]
+        if pa_idx==None:
+            print_error('Active vert is not detected')
+            print('Error: 030 B_spline')
+            return False
+        
+        pa_sort = sort_list.index(pa_idx)
+        if pa_sort < 2: pa_sort = 2
+        if pa_sort > len(sort_list)-3: pa_sort = len(sort_list)-3
+        pa_idx = sort_list[pa_sort]
+        pa_perc = list_koeff[pa_sort-2]
+        p0_ = me.vertices[sort_list[1]].co
+        p1_ = me.vertices[pa_idx].co
+        p2_ = me.vertices[sort_list[-2]].co
+        
+        kn1_ = me.vertices[sort_list[0]].co
+        kn2_ = me.vertices[sort_list[-1]].co
+        nkn1_ = p1_ - kn1_ + p1_
+        nkn2_ = p2_ - kn2_ + p2_
+        
+        if mode[3]:
+            l = len(list_koeff)
+            d = 1/l
+            list_koeff = list(map(lambda n: d*n, list(range(1,l+1))))
+        
+        if mode[0]:
+            all_vts_sort = [me.vertices[i].co.x for i in sort_list]
+            p0 = p0_.x
+            p1 = p1_.x - p0
+            p2 = p2_.x - p0
+            knot_1 = nkn1_.x - p0
+            knot_2 = nkn2_.x - p0
+            
+            t = pa_perc
+            b = (p1-(4*knot_1*t*(1-t)**3)-(4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+            new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = [0]+new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 0
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                    new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+                
+            
+            for idx in range(cou_vs-2):
+                me.vertices[sort_list[idx+2]].co.x += (new_vts[idx]+p0-me.vertices[sort_list[idx+2]].co.x)*influe
+
+        if mode[1]:
+            all_vts_sort = [me.vertices[i].co.y for i in sort_list]
+            p0 = p0_.y
+            p1 = p1_.y - p0
+            p2 = p2_.y - p0
+            knot_1 = nkn1_.y - p0
+            knot_2 = nkn2_.y - p0
+            
+            t = pa_perc
+            b = (p1-(4*knot_1*t*(1-t)**3)-(4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+            new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = [0]+new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 0
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                    new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+                
+            
+            for idx in range(cou_vs-2):
+                me.vertices[sort_list[idx+2]].co.y += (new_vts[idx]+p0-me.vertices[sort_list[idx+2]].co.y)*influe
+            
+        if mode[2]:
+            all_vts_sort = [me.vertices[i].co.z for i in sort_list]
+            p0 = p0_.z
+            p1 = p1_.z - p0
+            p2 = p2_.z - p0
+            knot_1 = nkn1_.z - p0
+            knot_2 = nkn2_.z - p0
+            
+            t = pa_perc
+            b = (p1-(4*knot_1*t*(1-t)**3)-(4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+            new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = [0]+new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 0
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                    new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+                
+            
+            for idx in range(cou_vs-2):
+                me.vertices[sort_list[idx+2]].co.z += (new_vts[idx]+p0-me.vertices[sort_list[idx+2]].co.z)*influe
+            
+        
+            
+            
+            
+        me.update()   
+        bm.free() 
+        
+        bpy.ops.object.mode_set(mode='EDIT')  
+            
+    return True
+
+
+def main_B_spline_2(context, mode, influe):
+    global steps_smoose
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    cou_vs = len(verts) - 1
+    if verts != None and cou_vs>0:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        
+        if len(extreme_vs) != 2:
+            print_error('Single Loop only')
+            print('Error: 01 B_spline')
+            return False
+        
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        all_vts_sort_x = [me.vertices[i].co.x for i in sort_list]
+        all_vts_sort_y = [me.vertices[i].co.y for i in sort_list]
+        all_vts_sort_z = [me.vertices[i].co.z for i in sort_list]
+        
+        max_p = [max(all_vts_sort_x), max(all_vts_sort_y), max(all_vts_sort_z)]
+        min_p = [min(all_vts_sort_x), min(all_vts_sort_y), min(all_vts_sort_z)]
+        diap_p = list(map(lambda a,b: a-b, max_p, min_p))
+        
+        if len(sort_list) != len(verts):
+            print_error('Incoherent loop')
+            print('Error: 020 B_spline')
+            return False
+        
+        list_length = []
+        sum_length = 0.0
+        for sl in range(cou_vs):
+            subb = me.vertices[sort_list[sl+1]].co-me.vertices[sort_list[sl]].co
+            sum_length += subb.length
+            list_length.append(sum_length)
+        
+        list_koeff = []
+        for sl in range(cou_vs):
+            tmp = list_length[sl]/sum_length
+            list_koeff.append(tmp)
+        
+        bpy.ops.object.mode_set(mode='OBJECT') 
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        
+        pa_idx = bm_vert_active_get(bm)[0]
+        if pa_idx==None:
+            print_error('Active vert is not detected')
+            print('Error: 030 B_spline')
+            return False
+        
+        list_koeff = [0]+list_koeff
+        pa_sort = sort_list.index(pa_idx)
+        if pa_sort == 0: 
+            pa_perc = 0
+            kn1_i = sort_list[0]
+            kn2_i = sort_list[pa_sort+1]
+        elif pa_sort == len(sort_list)-1:
+            pa_perc = 1.0
+            kn1_i = sort_list[pa_sort-1]
+            kn2_i = sort_list[-1]
+        else:
+            kn1_i = sort_list[pa_sort-1]
+            kn2_i = sort_list[pa_sort+1]
+            pa_perc = list_koeff[pa_sort]
+        
+        kn1_ = me.vertices[kn1_i].co
+        kn2_ = me.vertices[kn2_i].co
+        
+        p0_ = me.vertices[sort_list[0]].co
+        p1_ = me.vertices[pa_idx].co
+        p2_ = me.vertices[sort_list[-1]].co
+        
+        if mode[3]:
+            l = len(list_koeff)-1
+            d = 1/l
+            list_koeff = list(map(lambda n: d*n, list(range(0,l+1))))
+        
+        if mode[0]:
+            p0 = p0_.x
+            p1 = p1_.x - p0
+            p2 = p2_.x - p0
+            knot_1 = kn1_.x - p0
+            knot_2 = kn2_.x - p0
+            
+            t = pa_perc
+            if knot_1==0 and p1!=0:
+                b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==0:
+                new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+            elif knot_2==p2 and p1!=p2:
+                b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==p2:
+                new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+            else:
+                b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 1e-8
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                        
+                    if knot_1==0 and p1!=0:
+                        b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==0:
+                        new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+                    elif knot_2==p2 and p1!=p2:
+                        b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                        new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==p2:
+                        new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+                    else:
+                        b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            for idx in range(cou_vs+1):
+                me.vertices[sort_list[idx]].co.x += (new_vts[idx] + p0 - me.vertices[sort_list[idx]].co.x)*influe
+
+        if mode[1]:
+            p0 = p0_.y
+            p1 = p1_.y - p0
+            p2 = p2_.y - p0
+            knot_1 = kn1_.y - p0
+            knot_2 = kn2_.y - p0
+            
+            t = pa_perc
+            if knot_1==0 and p1!=0:
+                b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==0:
+                new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+            elif knot_2==p2 and p1!=p2:
+                b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==p2:
+                new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+            else:
+                b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 1e-8
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                    
+                    if knot_1==0 and p1!=0:
+                        b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==0:
+                        new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+                    elif knot_2==p2 and p1!=p2:
+                        b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                        new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==p2:
+                        new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+                    else:
+                        b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+                
+            for idx in range(cou_vs+1):
+                me.vertices[sort_list[idx]].co.y += (new_vts[idx] + p0 - me.vertices[sort_list[idx]].co.y)*influe
+            
+        if mode[2]:
+            p0 = p0_.z
+            p1 = p1_.z - p0
+            p2 = p2_.z - p0
+            knot_1 = kn1_.z - p0
+            knot_2 = kn2_.z - p0
+            
+            t = pa_perc
+            if knot_1==0 and p1!=0:
+                b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==0:
+                new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+            elif knot_2==p2 and p1!=p2:
+                b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+            elif p1==p2:
+                new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+            else:
+                b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    d = L/lp    
+                    l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                    l = list(map(lambda x: x/L, P))
+
+                    tmp = 1e-8
+                    for i in range(lp):
+                        tmp += l[i]
+                        m = l_[i]/tmp
+                        list_koeff[i] = m*list_koeff[i]
+                    if knot_1==0 and p1!=0:
+                        b = (p1-(3*knot_2*t**2*(1-t)+p2*t**3))/(3*t*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 3*b*t*(1-t)**2+3*knot_2*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==0:
+                        new_vts = list(map(lambda t: 2*knot_2*t*(1-t)+p2*t**2, list_koeff))
+                    elif knot_2==p2 and p1!=p2:
+                        b = (p1-(3*knot_1*t*(1-t)**2+p2*t**3))/(3*t**2*(1-t)+1e-8)
+                        new_vts = list(map(lambda t: 3*knot_1*t*(1-t)**2+3*b*t**2*(1-t)+p2*t**3, list_koeff))
+                    elif p1==p2:
+                        new_vts = list(map(lambda t: 2*knot_1*t*(1-t)+p2*t**2, list_koeff))
+                    else:
+                        b = (p1-(4*knot_1*t*(1-t)**3+4*t**3*(1-t)*knot_2+p2*t**4))/(4*t**2*(1-t)**2+1e-8)
+                        new_vts = list(map(lambda t: 4*knot_1*t*(1-t)**3+4*b*t**2*(1-t)**2+4*t**3*(1-t)*knot_2+p2*t**4, list_koeff))
+            
+            for idx in range(cou_vs+1):
+                me.vertices[sort_list[idx]].co.z += (new_vts[idx] + p0 - me.vertices[sort_list[idx]].co.z)*influe
+            
+        me.update()   
+        bm.free() 
+        
+        bpy.ops.object.mode_set(mode='EDIT')  
+            
+    return True
+
+
+def main_Basier_mid(context, mode, influe):
+    global steps_smoose
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    cou_vs = len(verts) - 1
+    if verts != None and cou_vs>0:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        
+        if len(extreme_vs) != 2:
+            print_error('Single Loop only')
+            print('Error: 01 Basier_mid')
+            return False
+        
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        all_vts_sort_x = [me.vertices[i].co.x for i in sort_list]
+        all_vts_sort_y = [me.vertices[i].co.y for i in sort_list]
+        all_vts_sort_z = [me.vertices[i].co.z for i in sort_list]
+        
+        max_p = [max(all_vts_sort_x), max(all_vts_sort_y), max(all_vts_sort_z)]
+        min_p = [min(all_vts_sort_x), min(all_vts_sort_y), min(all_vts_sort_z)]
+        diap_p = list(map(lambda a,b: a-b, max_p, min_p))
+        
+        if len(sort_list) != len(verts):
+            print_error('Incoherent loop')
+            print('Error: 020 Basier_mid')
+            return False
+        
+        bpy.ops.object.mode_set(mode='OBJECT') 
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        
+        pa_idx = bm_vert_active_get(bm)[0]
+        if pa_idx==None:
+            bm.free() 
+            print_error('Active vert is not detected')
+            print('Error: 030 Basier_mid')
+            return False
+        
+        pa_sort = sort_list.index(pa_idx)
+        
+        
+        
+        list_length_a = []
+        list_length_b = []
+        sum_length_a = 0.0
+        sum_length_b = 0.0
+        for sl in range(pa_sort-1):
+            subb = me.vertices[sort_list[sl+1]].co-me.vertices[sort_list[sl]].co
+            sum_length_a += subb.length
+            list_length_a.append(sum_length_a)
+        for sl in range(cou_vs-pa_sort-1):
+            subb = me.vertices[sort_list[sl+2+pa_sort]].co-me.vertices[sort_list[sl+1+pa_sort]].co
+            sum_length_b += subb.length
+            list_length_b.append(sum_length_b)
+            
+        
+        
+        
+        
+        list_koeff_a = []
+        list_koeff_b = []
+        for sl in range(len(list_length_a)):
+            tmp = list_length_a[sl]/sum_length_a
+            list_koeff_a.append(tmp)
+        for sl in range(len(list_length_b)):
+            tmp = list_length_b[sl]/sum_length_b
+            list_koeff_b.append(tmp)
+        
+        list_koeff_a = [0]+list_koeff_a
+        list_koeff_b = [0]+list_koeff_b
+        
+        if pa_sort == 0: 
+            kn1_i = sort_list[0]
+            kn2_i = sort_list[pa_sort+1]
+        elif pa_sort == len(sort_list)-1:
+            kn1_i = sort_list[pa_sort-1]
+            kn2_i = sort_list[-1]
+        else:
+            kn1_i = sort_list[pa_sort-1]
+            kn2_i = sort_list[pa_sort+1]
+        
+        
+        
+        nkn1_ = me.vertices[kn1_i].co
+        nkn2_ = me.vertices[kn2_i].co
+        
+        p0_ = me.vertices[sort_list[0]].co
+        p1_ = me.vertices[pa_idx].co
+        p2_ = me.vertices[sort_list[-1]].co
+        
+        kn1_ = nkn1_ - p1_ + nkn1_
+        kn2_ = nkn2_ - p1_ + nkn2_
+        
+        if mode[3]:
+            la = len(list_koeff_a)-1
+            lb = len(list_koeff_b)-1
+            if la==0: da=0
+            else: da = 1/la
+            
+            if lb==0: db=0
+            else: db = 1/lb
+            
+            list_koeff_a = list(map(lambda n: da*n, list(range(0,la+1))))
+            list_koeff_b = list(map(lambda n: db*n, list(range(0,lb+1))))
+        
+        
+        if mode[0]:
+            p0 = p0_.x
+            p1 = p1_.x - p0
+            p2 = p2_.x - p0
+            knot_1 = kn1_.x - p0
+            knot_2 = kn2_.x - p0
+            pA = nkn1_.x - p0
+            pB = nkn2_.x - p0
+            nkn1 = nkn1_.x - p0
+            nkn2 = nkn2_.x - p0
+            
+            if nkn1==0 or p1==0:
+                new_vts_a = []
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            elif nkn2==p2 or p1==p2:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = []
+            else:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts_a
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_a[i] = m*list_koeff_a[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                    
+                    
+                    
+                    new_vts_ = new_vts_b
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_b[i] = m*list_koeff_b[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                    
+            
+            if new_vts_a:
+                for idx in range(pa_sort):
+                    me.vertices[sort_list[idx]].co.x += (new_vts_a[idx] + p0 - me.vertices[sort_list[idx]].co.x)*influe
+            if new_vts_b:
+                for idx in range(cou_vs-pa_sort):
+                    me.vertices[sort_list[idx+pa_sort+1]].co.x += (new_vts_b[idx] + p0 - \
+                    me.vertices[sort_list[idx+pa_sort+1]].co.x)*influe
+            
+        if mode[1]:
+            p0 = p0_.y
+            p1 = p1_.y - p0
+            p2 = p2_.y - p0
+            knot_1 = kn1_.y - p0
+            knot_2 = kn2_.y - p0
+            pA = nkn1_.y - p0
+            pB = nkn2_.y - p0
+            nkn1 = nkn1_.y - p0
+            nkn2 = nkn2_.y - p0
+            
+            if nkn1==0 or p1==0:
+                new_vts_a = []
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            elif nkn2==p2 or p1==p2:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = []
+            else:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts_a
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_a[i] = m*list_koeff_a[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                    
+                    
+                    
+                    new_vts_ = new_vts_b
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_b[i] = m*list_koeff_b[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            
+            if new_vts_a:
+                for idx in range(pa_sort):
+                    me.vertices[sort_list[idx]].co.y += (new_vts_a[idx] + p0 - me.vertices[sort_list[idx]].co.y)*influe
+            if new_vts_b:
+                for idx in range(cou_vs-pa_sort):
+                    me.vertices[sort_list[idx+pa_sort+1]].co.y += (new_vts_b[idx] + p0 - \
+                    me.vertices[sort_list[idx+pa_sort+1]].co.y)*influe
+            
+        if mode[2]:
+            p0 = p0_.z
+            p1 = p1_.z - p0
+            p2 = p2_.z - p0
+            knot_1 = kn1_.z - p0
+            knot_2 = kn2_.z - p0
+            pA = nkn1_.z - p0
+            pB = nkn2_.z - p0
+            nkn1 = nkn1_.z - p0
+            nkn2 = nkn2_.z - p0
+            
+            if nkn1==0 or p1==0:
+                new_vts_a = []
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            elif nkn2==p2 or p1==p2:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = []
+            else:
+                new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+            
+            if mode[3]:
+                for c in range(steps_smoose):
+                    new_vts_ = new_vts_a
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_a[i] = m*list_koeff_a[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                    
+                    
+                    
+                    new_vts_ = new_vts_b
+                    V = [vi for vi in new_vts_]
+                    P = list(map(lambda x,y: abs(y-x), V[:-1], V[1:]))
+                    L = sum(P)
+                    lp = len(P)
+                    if lp>0:
+                        d = L/lp    
+                        l_ = list(map(lambda y: d*y/L, list(range(1,lp+1))))
+                        l = list(map(lambda x: x/L, P))
+
+                        tmp = 1e-8
+                        for i in range(lp):
+                            tmp += l[i]
+                            m = l_[i]/tmp
+                            list_koeff_b[i] = m*list_koeff_b[i]
+                        if nkn1==0 or p1==0:
+                            new_vts_a = []
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                        elif nkn2==p2 or p1==p2:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = []
+                        else:
+                            new_vts_a = list(map(lambda t: 2*knot_1*t*(1-t)+pA*t**2, list_koeff_a))
+                            new_vts_b = list(map(lambda t: pB*(1-t)**2+2*knot_2*t*(1-t)+p2*t**2, list_koeff_b))
+                    
+            
+            if new_vts_a:
+                for idx in range(pa_sort):
+                    me.vertices[sort_list[idx]].co.z += (new_vts_a[idx] + p0 - me.vertices[sort_list[idx]].co.z)*influe
+            if new_vts_b:
+                for idx in range(cou_vs-pa_sort):
+                    me.vertices[sort_list[idx+pa_sort+1]].co.z += (new_vts_b[idx] + p0 - \
+                    me.vertices[sort_list[idx+pa_sort+1]].co.z)*influe
+            
+        me.update()   
+        bm.free() 
+        
+        bpy.ops.object.mode_set(mode='EDIT')  
+            
+    return True
+
+
+def getMats(context):
+    global list_z, mats_idx, list_f, maloe
+    
+    obj = bpy.context.active_object
+    me = obj.data
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.mode_set(mode='EDIT') 
+    bpy.ops.mesh.select_mode(type='VERT')
+    
+    list_z = [v.co.z for v in me.vertices if v.select]
+    list_z = list(set(list_z))
+    list_z.sort()
+    
+    bpy.ops.mesh.select_mode(type='FACE')
+    list_f = [p.index for p in me.polygons if p.select]
+    black_list = []
+    mats_idx = []
+    for z in list_z:
+        for p in list_f:
+            if p not in black_list:
+                for v in me.polygons[p].vertices:
+                    if abs(me.vertices[v].co.z-z)<maloe:
+                        mats_idx.append(me.polygons[p].material_index)
+                        black_list.append(p)
+                        break
+    bpy.ops.mesh.select_mode(type='VERT')
+    
+    
+
+
+def main_matExtrude(context):
+    global list_z, mats_idx, list_f, maloe
+    
+    obj = bpy.context.active_object
+    me = obj.data
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    vert = [v.index for v in me.vertices if v.select][0]
+    
+    
+    def find_index_of_selected_vertex(obj):  
+        # force 'OBJECT' mode temporarily. [TODO]  
+        selected_verts = [i.index for i in obj.data.vertices if i.select]  
+        verts_selected = len(selected_verts)  
+        if verts_selected <1:                   
+            return None  
+        else:  
+            return selected_verts 
+        
+        
+    def find_connected_verts(me, found_index, not_list):  
+        edges = me.edges  
+        connecting_edges = [i for i in edges if found_index in i.vertices[:]]  
+        if len(connecting_edges) == 0: 
+            return []
+        else:  
+            connected_verts = []  
+            for edge in connecting_edges:  
+                cvert = set(edge.vertices[:])   
+                cvert.remove(found_index)  
+                vert = cvert.pop()
+                if not (vert in not_list) and me.vertices[vert].select:
+                    connected_verts.append(vert)  
+            return connected_verts  
+        
+        
+    def find_all_connected_verts(me, active_v, not_list=[], step=0):
+        vlist = [active_v]
+        not_list.append(active_v)
+        step+=1
+        list_v_1 = find_connected_verts(me, active_v, not_list)
+        
+        for v in list_v_1:
+            list_v_2 = find_all_connected_verts(me, v, not_list, step) 
+            vlist += list_v_2
+                     
+        return vlist  
+        
+    
+    
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    
+    verts = find_all_connected_verts(me,vert)
+    vts = [bm.verts[vr] for vr in verts]
+    face_build = []
+    face_build.extend(verts)
+    fl = len(bm.verts)+1
+    for zidx,z in enumerate(list_z):
+        vts_tmp = []
+        for i,vs in enumerate(vts[:-1]):
+            vco1 = vs.co
+            vco2 = vts[i+1].co
+            vco1.z = z
+            vco2.z = z
+            if i==0:
+                v1 = bm.verts.new(vco1)
+                face_build.append(len(bm.verts)-1)
+            else:
+                v1=v2
+            v2 = bm.verts.new(vco2)
+            face_build.append(len(bm.verts)-1)
+            f = bm.faces.new([vs,v1,v2,vts[i+1]])
+            f.material_index = mats_idx[min(zidx, len(mats_idx)-1)]
+            if i==0:
+                vts_tmp.append(v1)
+            vts_tmp.append(v2)
+        vts = vts_tmp.copy()
+        
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bm.to_mesh(me) 
+    bm.free() 
+    
+    bpy.ops.object.mode_set(mode='EDIT') 
+    bpy.ops.mesh.select_mode(type='FACE')
+    bpy.ops.mesh.select_all(action = 'DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for p in face_build:
+        me.vertices[p].select = True
+    bpy.ops.object.mode_set(mode='EDIT') 
+    bpy.ops.mesh.select_mode(type='VERT')
+    bpy.ops.mesh.remove_doubles()
 
 
 class LayoutSSPanel(bpy.types.Panel):
@@ -1104,7 +2225,7 @@ class LayoutSSPanel(bpy.types.Panel):
             split.prop(lt, "display", text="", icon='RIGHTARROW')
 
         spread_op = split.operator("mesh.spread_operator", text = 'Spread Loop')
-            
+        
         if lt.display:
             box = col.column(align=True).box().column()
             col_top = box.column(align=True)
@@ -1115,8 +2236,15 @@ class LayoutSSPanel(bpy.types.Panel):
             row = col_top.row(align=True)
             row.prop(lt, 'spread_z', text = 'Spread Z')
             row = col_top.row(align=True)
-            row = col_top.row(align=True)
             row.prop(lt, 'relation', text = 'Relation')
+            box = box.box().column()
+            row = box.row(align=True)
+            row.prop(lt, 'shape_spline', text = 'Shape spline')
+            row = box.row(align=True)
+            row.active = lt.shape_spline
+            row.prop(lt, 'spline_Bspline2', text = 'Smooth transition')
+            row = box.row(align=True)
+            
         
         split = col.split()
         if lt.display_align:
@@ -1227,8 +2355,7 @@ class LayoutSSPanel(bpy.types.Panel):
             if lt.disp_cp_project:
                 row = col_top.row(align=True)
                 split = row.split(0.5, True)
-                split.scale_y = 1.5
-                split.operator("mesh.polycross", text = 'Section').type_op = 0 # section
+                split.operator("mesh.polycross", text = 'Section').type_op = 0 # section and clear filter
                 split.operator("mesh.polycross", text = 'Cut').type_op = 1 # cross
                 row = col_top.row(align=True)
                 row.prop(lt,"fill_cuts", text="fill cut")
@@ -1246,15 +2373,59 @@ class LayoutSSPanel(bpy.types.Panel):
             
             if lt.disp_cp_filter:
                 row = col_top.row(align=True)
-                row.scale_y = 1.5
-                row.operator("mesh.polycross", text = 'to SELECT').type_op = 0 # section
+                #row.active = lt.filter_edges or lt.filter_verts_bottom or lt.filter_verts_top
+                row.operator("mesh.polycross", text = 'to SELECT').type_op = 2 # only filter
                 row = col_top.row(align=True)
                 row.prop(lt,"filter_edges", text="Filter Edges")
                 row = col_top.row(align=True)
                 row.prop(lt,"filter_verts_top", text="Filter Top")
                 row = col_top.row(align=True)
                 row.prop(lt,"filter_verts_bottom", text="Filter Bottom")
+        
+        split = col.split()
+        if lt.disp_matExtrude:
+            split.prop(lt, "disp_matExtrude", text="AutoExtrude", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_matExtrude", text="AutoExtrude", icon='RIGHTARROW')
+        
+        if lt.disp_matExtrude:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("mesh.get_mat4extrude", text='Get Mats')
+            row = col_top.row(align=True) 
+            row.operator("mesh.mat_extrude", text='Template Extrude')
             
+        
+class MatExrudeOperator(bpy.types.Operator):
+    """Extude with mats"""
+    bl_idname = "mesh.mat_extrude"
+    bl_label = "Mat Extrude"
+    bl_options = {'REGISTER', 'UNDO'} 
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        main_matExtrude(context)
+        return {'FINISHED'}    
+
+
+class GetMatsOperator(bpy.types.Operator):
+    """Get mats"""
+    bl_idname = "mesh.get_mat4extrude"
+    bl_label = "Get Mats for extrude"
+    bl_options = {'REGISTER', 'UNDO'} 
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        getMats(context)
+        return {'FINISHED'}    
+
         
 class SSOperator(bpy.types.Operator):
     """Tooltip"""
@@ -1286,8 +2457,22 @@ class CrossPolsOperator(bpy.types.Operator):
         lt = bpy.context.window_manager.paul_manager
         if self.type_op == 0:
             lt.SPLIT = False
+            lt.filter_edges = False
+            lt.filter_verts_top = False
+            lt.filter_verts_bottom = False
         elif self.type_op == 1:
             lt.SPLIT = True
+            lt.filter_edges = False
+            lt.filter_verts_top = False
+            lt.filter_verts_bottom = False
+        else:
+            if lt.filter_edges or lt.filter_verts_bottom or lt.filter_verts_top:
+                if lt.filter_edges:
+                    lt.filter_verts_bottom = False
+                    lt.filter_verts_top = False
+            else:
+                select_v_on_plane()
+                return {'FINISHED'}
         
         crosspols()
         return {'FINISHED'}
@@ -1299,13 +2484,28 @@ class SpreadOperator(bpy.types.Operator):
     bl_label = "Spread operator"
     bl_options = {'REGISTER', 'UNDO'} 
     
+    def updateself(self, context):
+        bpy.context.window_manager.paul_manager.shape_inf = self.influence * 5
+    
+    influence = bpy.props.IntProperty(name = "Shape",
+        description = "instance -> spline -> spline 2 -> Basier_mid -> Basier -> instance",
+        default = 0,
+        min = 0,
+        max = 50,
+        update = updateself)
+    
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
-
+    
+    def draw(self, context):
+        layout = self.layout
+        row = layout.row()
+        row.prop(self, 'influence')
+    
     def execute(self, context):
         config = bpy.context.window_manager.paul_manager
-        if main_spread(context, (config.spread_x, config.spread_y, config.spread_z, config.relation)):
+        if main_spread(context, (config.spread_x, config.spread_y, config.spread_z, config.relation), self.influence*5):
             pass
             #print('spread complete')
         return {'FINISHED'}
@@ -1494,7 +2694,13 @@ class paul_managerProps(bpy.types.PropertyGroup):
     disp_cp = bpy.props.BoolProperty(name = 'disp_cp', default = False)
     disp_cp_project = bpy.props.BoolProperty(name = 'disp_cp_project', default = False)
     disp_cp_filter = bpy.props.BoolProperty(name = 'disp_cp_filter', default = False)
-
+    
+    shape_inf = bpy.props.IntProperty(name="shape_inf", min=0, max=200, default = 0)
+    shape_spline = bpy.props.BoolProperty(name="shape_spline", default = False)
+    spline_Bspline2 = bpy.props.BoolProperty(name="spline_Bspline2", default = True)
+    
+    disp_matExtrude = bpy.props.BoolProperty(name = 'disp_matExtrude', default = False)
+    
 
 class MessageOperator(bpy.types.Operator):
     from bpy.props import StringProperty
@@ -1525,7 +2731,8 @@ def print_error(message):
 
 
 
-classes = [CrossPolsOperator, SSOperator, SpreadOperator, AlignOperator, LayoutSSPanel, MessageOperator, \
+classes = [MatExrudeOperator, GetMatsOperator, CrossPolsOperator, SSOperator, SpreadOperator, \
+    AlignOperator, LayoutSSPanel, MessageOperator, \
     OffsetOperator, paul_managerProps]
 
 
@@ -1563,6 +2770,7 @@ def register():
     bpy.context.window_manager.paul_manager.filter_edges = False
     bpy.context.window_manager.paul_manager.filter_verts_top = False
     bpy.context.window_manager.paul_manager.filter_verts_bottom = False
+    bpy.context.window_manager.paul_manager.shape_inf = 0
     
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name='offset', space_type='VIEW_3D')
