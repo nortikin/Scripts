@@ -20,9 +20,9 @@
 
 bl_info = {
     "name": "1D_Scripts",                     
-    "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design)",
-    "version": (0, 3, 8),
-    "blender": (2, 6, 8),
+    "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design), Nikitron",
+    "version": (0, 7, 1),
+    "blender": (2, 7, 3),
     "location": "View3D > Toolbar",
     "category": "Mesh"
 }  
@@ -31,12 +31,249 @@ bl_info = {
 
 import bpy,bmesh, mathutils, math
 from mathutils import Vector
+from mathutils.geometry import intersect_line_plane, intersect_point_line
+from math import sin, cos, pi, sqrt, degrees
+import os, urllib
+from bpy.props import BoolProperty
+
 
 list_z = []
 mats_idx = []
 list_f = []
 maloe = 1e-5
 steps_smoose = 0
+
+
+def check_lukap(bm):
+    if hasattr(bm.verts, "ensure_lookup_table"): 
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+
+#----- Module: extrude along path -------
+# author this module: Zmj100
+# version 0.5.0.9
+# ref: http://blenderartists.org/forum/showthread.php?179375-Addon-Edge-fillet-and-other-bmesh-tools-Update-Jan-11
+
+def edit_mode_out():
+    bpy.ops.object.mode_set(mode = 'OBJECT')
+
+def edit_mode_in():
+    bpy.ops.object.mode_set(mode = 'EDIT')
+
+def get_adj_v_(list_):
+        tmp = {}
+        for i in list_:
+                try:             tmp[i[0]].append(i[1])
+                except KeyError: tmp[i[0]] = [i[1]]
+                try:             tmp[i[1]].append(i[0])
+                except KeyError: tmp[i[1]] = [i[0]]
+        return tmp
+
+def f_1(frst, list_, last):      # edge chain
+    fi = frst
+    tmp = [frst]
+    while list_ != []:
+        for i in list_:
+            if i[0] == fi:
+                tmp.append(i[1])
+                fi = i[1]
+                list_.remove(i)
+            elif i[1] == fi:
+                tmp.append(i[0])
+                fi = i[0]
+                list_.remove(i)
+        if tmp[-1] == last:
+            break
+    return tmp
+
+def f_2(frst, list_):      # edge loop
+    fi = frst
+    tmp = [frst]
+    while list_ != []:
+        for i in list_:
+            if i[0] == fi:
+                tmp.append(i[1])
+                fi = i[1]
+                list_.remove(i)
+            elif i[1] == fi:
+                tmp.append(i[0])
+                fi = i[0]
+                list_.remove(i)
+        if tmp[-1] == frst:
+            break
+    return tmp
+
+def is_loop_(list_fl):
+    return True if len(list_fl) == 0 else False
+
+def e_no_(bme, indx, p, p1):
+    if hasattr(bme.verts, "ensure_lookup_table"): 
+        bme.verts.ensure_lookup_table()
+    tmp1 = (bme.verts[indx].co).copy()
+    tmp1[0] += 0.1
+    tmp1[1] += 0.1
+    tmp1[2] += 0.1
+    ip1 = intersect_point_line( tmp1, p, p1)[0]
+    return tmp1 - ip1
+
+# ------ ------
+def f_(bme, dict_0, list_fl, loop):
+    check_lukap(bme)
+    if loop:
+        list_1 = f_2(eap_buf.list_sp[0], eap_buf.list_ek)
+        del list_1[-1]
+    else:
+        list_1 = f_1(eap_buf.list_sp[0], eap_buf.list_ek, list_fl[1] if eap_buf.list_sp[0] == list_fl[0] else list_fl[0])
+
+    list_2 = [ v.index for v in bme.verts if v.select and v.is_valid ]
+    n1 = len(list_2)
+
+    list_3 = list_2[:]
+
+    dict_1 = {}
+    for k in list_2:
+        dict_1[k] = [k]
+
+
+
+    n = len(list_1)
+    for i in range(n):
+        p = (bme.verts[list_1[i]].co).copy()
+        p1 = (bme.verts[list_1[(i - 1) % n]].co).copy()
+        p2 = (bme.verts[list_1[(i + 1) % n]].co).copy()
+        vec1 = p - p1
+        vec2 = p - p2
+        ang = vec1.angle(vec2, any)
+
+        if round(degrees(ang)) == 180.0 or round(degrees(ang)) == 0.0:
+            pp = p - ((e_no_(bme, list_1[i], p, p1)).normalized() * 0.1)
+            pn = vec1.normalized()
+        else:
+            pp = ((p - (vec1.normalized() * 0.1)) + (p - (vec2.normalized() * 0.1))) * 0.5
+            pn = ((vec1.cross(vec2)).cross(p - pp)).normalized()
+
+        if loop:      # loop
+            if i == 0:
+                pass
+            else:
+                for j in range(n1):
+                    v = (bme.verts[list_3[j]].co).copy()
+                    bme.verts.new(intersect_line_plane(v, v + (vec1.normalized() * 0.1), pp, pn))
+                    bme.verts.index_update()
+                    if hasattr(bme.verts, "ensure_lookup_table"): 
+                        bme.verts.ensure_lookup_table()
+                    list_3[j] = bme.verts[-1].index
+                    dict_1[list_2[j]].append(bme.verts[-1].index)
+
+        else:      # path
+            if i == 0:
+                pass
+            elif i == (n - 1):
+                pp_ = p - ((e_no_(bme, list_fl[1] if eap_buf.list_sp[0] == list_fl[0] else list_fl[0], p, p1)).normalized() * 0.1)
+                pn_ = vec1.normalized()
+                for j in range(n1):
+                    v = (bme.verts[list_3[j]].co).copy()
+                    bme.verts.new(intersect_line_plane(v, v + (vec1.normalized() * 0.1), pp_, pn_))
+                    bme.verts.index_update()
+                    if hasattr(bme.verts, "ensure_lookup_table"): 
+                        bme.verts.ensure_lookup_table()
+                    dict_1[list_2[j]].append(bme.verts[-1].index)
+            else:
+                for j in range(n1):
+                    v = (bme.verts[list_3[j]].co).copy()
+                    bme.verts.new(intersect_line_plane(v, v + (vec1.normalized() * 0.1), pp, pn))
+                    bme.verts.index_update()
+                    if hasattr(bme.verts, "ensure_lookup_table"): 
+                        bme.verts.ensure_lookup_table()
+                    list_3[j] = bme.verts[-1].index
+                    dict_1[list_2[j]].append(bme.verts[-1].index)
+
+    # -- -- -- --
+    list_4 = [[v.index for v in e.verts] for e in bme.edges if e.select and e.is_valid ]
+    n2 = len(list_4)
+
+    for t in range(n2):
+        for o in range(n if loop else (n - 1)):
+            bme.faces.new([bme.verts[dict_1[list_4[t][0]][o]], bme.verts[dict_1[list_4[t][1]][o]], bme.verts[dict_1[list_4[t][1]][(o + 1) % n]], bme.verts[dict_1[list_4[t][0]][(o + 1) % n]]])
+            bme.faces.index_update()
+            if hasattr(bme.faces, "ensure_lookup_table"): 
+                bme.faces.ensure_lookup_table()
+
+# ------ ------
+class eap_buf():
+    list_ek = []      # path
+    list_sp = []      # start point
+
+# ------ operator 0 ------
+class eap_op0(bpy.types.Operator):
+    bl_idname = 'eap.op0_id'
+    bl_label = '....'
+
+    def execute(self, context):
+        edit_mode_out()
+        ob_act = context.active_object
+        bme = bmesh.new()
+        bme.from_mesh(ob_act.data)
+        check_lukap(bme)
+        eap_buf.list_ek[:] = []
+        for e in bme.edges:
+            if e.select and e.is_valid:
+                eap_buf.list_ek.append([v.index for v in e.verts])
+                e.select_set(0)
+        bme.to_mesh(ob_act.data)
+        edit_mode_in()
+        return {'FINISHED'}
+
+# ------ operator 1 ------
+class eap_op1(bpy.types.Operator):
+    bl_idname = 'eap.op1_id'
+    bl_label = '....'
+
+    def execute(self, context):
+        edit_mode_out()
+        ob_act = context.active_object
+        bme = bmesh.new()
+        bme.from_mesh(ob_act.data)
+        check_lukap(bme)
+        eap_buf.list_sp[:] = []
+        for v in bme.verts:
+            if v.select and v.is_valid:
+                eap_buf.list_sp.append(v.index)
+                v.select_set(0)
+        bme.to_mesh(ob_act.data)
+        edit_mode_in()
+        return {'FINISHED'}
+
+# ------ operator 2 ------
+class eap_op2(bpy.types.Operator):
+    bl_idname = 'eap.op2_id'
+    bl_label = 'Extrude Along Path'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def draw(self, context):
+        layout = self.layout
+
+    def execute(self, context):
+
+        edit_mode_out()
+        ob_act = context.active_object
+        bme = bmesh.new()
+        bme.from_mesh(ob_act.data)
+        check_lukap(bme)
+        
+        dict_0 = get_adj_v_(eap_buf.list_ek)
+        list_fl = [i for i in dict_0 if (len(dict_0[i]) == 1)]
+        loop = is_loop_(list_fl)
+        f_(bme, dict_0, list_fl, loop)
+
+        bme.to_mesh(ob_act.data)
+        edit_mode_in()
+        return {'FINISHED'}
+
+#-------------- END --- extrude along path ---------
+        
 
 def find_index_of_selected_vertex(mesh):  
     selected_verts = [i.index for i in mesh.vertices if i.select]  
@@ -233,7 +470,7 @@ def to_store(obj_name, bm):
         config.edge_idx_store = active_edge
         verts = bm.edges[active_edge].verts
         config.vec_store = (verts[1].co - verts[0].co) * \
-            bpy.data.objects[obj_name].matrix_world.to_3x3().transposed()
+        bpy.data.objects[obj_name].matrix_world.to_3x3().transposed()
         return
     
     if active_edge != None and el=='V':
@@ -277,6 +514,7 @@ def store_align(vts='edge', mode='EDIT_MESH'):
     bm = bmesh.new()
     bm.from_mesh(mesh)  
     result = True
+    check_lukap(bm)
     
     if vts=='vert':
         to_store_vert(obj.name, bm)
@@ -312,6 +550,37 @@ def getNormalPlane(vecs, mat):
     
     norm = mathutils.Vector((A,B,C)).normalized()
     return norm
+
+
+def getNormalPlane2(vecs, mat):
+    if len(vecs)<3:
+        return None
+    
+    out_ = []
+    vec_c = mathutils.Vector((0,0,0))
+    for v in vecs:
+        vec  = mat*v
+        out_.append(vec)
+        vec_c+=vec
+    
+    vec_c = vec_c / len(vecs) 
+                                       
+    v = out_[1]-out_[0]
+    w = out_[2]-out_[0]
+    A = v.y*w.z - v.z*w.y
+    B = -v.x*w.z + v.z*w.x
+    C = v.x*w.y - v.y*w.x
+    D = -out_[0].x*A - out_[0].y*B - out_[0].z*C   
+    
+    norm = mathutils.Vector((A,B,C)).normalized()
+    return norm
+
+
+def mk_ob(mesh,name, loc):
+    ob = bpy.data.objects.new(name, mesh)
+    ob.location = loc
+    bpy.context.scene.objects.link(ob)
+    return ob  
 
 
 def sign(x):
@@ -374,7 +643,8 @@ def match3D(flip = False):
     v3 = obj_A.data.vertices[connect_vs[1]]
     
     # вычислить нормаль объекта Б
-    if mode_ =='EDIT_MESH':
+    #if mode_ =='EDIT_MESH':
+    if config.coner_edge1_store != -1:
         lws = list(e1.vertices[:]+e2.vertices[:])
         for l in lws:
             if lws.count(l)>1: 
@@ -485,28 +755,156 @@ def match3D(flip = False):
         bpy.ops.object.mode_set(mode='EDIT') 
         
     else:
-        v1A = obj_A.matrix_world * v1.co
-        normal_A = getNormalPlane([v1.co, v2.co, v3.co], mathutils.Matrix())
-        normal_A = normal_A * obj_A.matrix_world.to_3x3().transposed()
-        normal_z = mathutils.Vector((0,0,1))
-        mat_rot1 = normal_z.rotation_difference(normal_A).to_matrix().to_4x4()
-        
-        vecA = (v2.co - v1.co) * obj_A.matrix_world.to_3x3().transposed()
-        vecB = mat_rot1 * normal_x
-        mat_rot = vecB.rotation_difference(vecA).to_matrix().to_4x4()
-        
-        obj_B.matrix_world = mat_rot * mat_rot1
-        vec_l = v1A-obj_B.location
-        obj_B.location = obj_B.location+vec_l
-    '''
-    config.variant += 1
-    if config.variant>3:
-        config.variant = 0'''
+        if config.coner_edge1_store == -1:
+            v1A = obj_A.matrix_world * v1.co
+            normal_A = getNormalPlane([v1.co, v2.co, v3.co], mathutils.Matrix())
+            normal_A = normal_A * obj_A.matrix_world.to_3x3().transposed()
+            normal_z = mathutils.Vector((0,0,1))
+            mat_rot1 = normal_z.rotation_difference(normal_A).to_matrix().to_4x4()
+            
+            vecA = (v2.co - v1.co) * obj_A.matrix_world.to_3x3().transposed()
+            vecB = mat_rot1 * normal_x
+            mat_rot = vecB.rotation_difference(vecA).to_matrix().to_4x4()
+            
+            obj_B.matrix_world = mat_rot * mat_rot1
+            vec_l = v1A-obj_B.location
+            obj_B.location = obj_B.location+vec_l
+            
+        else:
+            v1A = obj_A.matrix_world * v1.co
+            w1B = obj_B.matrix_world * w1.co 
+            vecB = (w2.co - w1.co) * obj_B.matrix_world.to_3x3().transposed()
+            
+            normal_A = getNormalPlane([v1.co, v2.co, v3.co], mathutils.Matrix())
+            normal_A = normal_A * obj_A.matrix_world.to_3x3().transposed()
+            normal_B = getNormalPlane([w1.co, w2.co, w3.co], mathutils.Matrix())
+            normal_B = normal_B * obj_B.matrix_world.to_3x3().transposed()
+            mat_rot1 = normal_B.rotation_difference(normal_A).to_matrix().to_4x4()
+            
+            vecA = (v2.co - v1.co) * obj_A.matrix_world.to_3x3().transposed()
+            vecB = mat_rot1 * vecB
+            mat_rot = vecB.rotation_difference(vecA).to_matrix().to_4x4()
+            
+            obj_B.matrix_world = mat_rot * mat_rot1
+            w1B = obj_B.matrix_world * w1.co
+            vec_l = v1A-w1B
+            obj_B.location = obj_B.location+vec_l
 
+
+def mirrorside():
+    mode_ = bpy.context.mode
+    bpy.ops.object.mode_set(mode='OBJECT')  
+    bpy.ops.object.mode_set(mode='EDIT')  
+    config = bpy.context.window_manager.paul_manager
+    if config.object_name_store_v == '' or \
+       config.active_edge1_store < 0 or config.active_edge2_store < 0:
+        print_error2('Stored Vertex is required','mirrorside 01')
+        return False
+    
+    obj_A =  bpy.data.objects[config.object_name_store_v]
+    ve1 = obj_A.data.edges[config.active_edge1_store]
+    ve2 = obj_A.data.edges[config.active_edge2_store]
+    
+    # получаем ещё две вершины. Иначе - реджект
+    connect_vs = []
+    connect_vs.extend(ve1.vertices[:])
+    connect_vs.extend(ve2.vertices[:])
+    v1 = -1
+    for v in connect_vs:
+        if connect_vs.count(v)>1:
+            v1 = obj_A.matrix_world * obj_A.data.vertices[v].co
+            connect_vs.pop(connect_vs.index(v))
+            connect_vs.pop(connect_vs.index(v))
+            break
+    
+    if v1 == -1:
+        print_error2('Active vertex of object_A must have two edges', 'mirrorside 04')
+        return False
+    
+    v2 = obj_A.matrix_world * obj_A.data.vertices[connect_vs[0]].co
+    v3 = obj_A.matrix_world * obj_A.data.vertices[connect_vs[1]].co
+    
+    obj_B = bpy.context.scene.objects.active
+    normal_B = getNormalPlane([v1, v2, v3], mathutils.Matrix())
+    if mode_ =='EDIT_MESH':
+        bpy.ops.object.mode_set(mode='EDIT') 
+        ref_vts = [v for v in obj_B.data.vertices if v.select==True]
+        verts = []
+        v_idx_B = []
+        for v in ref_vts:
+            verts.append(v.co)
+            v_idx_B.append(v.index)
+        
+        bpy.ops.object.mode_set(mode='OBJECT')  
+        bm = bmesh.new()
+        bm.from_mesh(obj_B.data) 
+        check_lukap(bm)
+        
+        vts = []
+        mat_inv = obj_B.matrix_world.inverted()
+        for pt_a_ in verts:
+            pt_a = obj_B.matrix_world * pt_a_
+            pt_b = normal_B + pt_a
+            cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, v1, normal_B)
+            
+            d_vec = cross_pt-pt_a
+            pt_c = cross_pt + d_vec
+            v_new = bm.verts.new(mat_inv*pt_c)
+            vts.append(v_new)
+        
+        bm.verts.index_update() 
+        check_lukap(bm)
+        vts_ = [v.index for v in vts]
+        ref_edges = [(e.vertices[0], e.vertices[1]) for e in obj_B.data.edges if e.select==True]
+        for e in ref_edges:
+            ev0 = v_idx_B.index(e[0])
+            ev1 = v_idx_B.index(e[1])
+            e = (bm.verts[vts_[ev0]], bm.verts[vts_[ev1]])
+            bm.edges.new(e)
+        check_lukap(bm)
+        
+        ref_faces = [(v for v in f.vertices) for f in obj_B.data.polygons if f.select==True]
+        for f in ref_faces:
+            f_B = []
+            for v in f:
+                fv = v_idx_B.index(v)
+                f_B.append(bm.verts[vts_[fv]])
+                
+            bm.faces.new(tuple(f_B))
+        
+        bm.to_mesh(obj_B.data)       
+        bm.free() 
+        bpy.ops.object.mode_set(mode='EDIT')
+        
+    elif mode_ =='OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bm = bmesh.new()
+        bm.from_mesh(obj_B.data) 
+        check_lukap(bm)
+        
+        ref_vtert = bm.verts
+        mat_inv = obj_B.matrix_world.inverted()
+        for pt_a_ in ref_vtert:
+            pt_a = obj_B.matrix_world * pt_a_.co
+            pt_b = normal_B + pt_a
+            cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, v1, normal_B)
+            
+            d_vec = cross_pt-pt_a
+            pt_c = cross_pt + d_vec
+            ref_vtert[pt_a_.index].co = mat_inv*pt_c
+        
+        name = obj_B.name+'copy'
+        me = bpy.data.meshes.new(name+'_Mesh')
+        obj_C = bpy.data.objects.new(name, me)
+        # Привязка объекта к сцене
+        bpy.context.scene.objects.link(obj_C)
+        
+        bm.to_mesh(me)       
+        me.update()   
+        bm.free() 
+        
 
 def main_align_object(axe='X',project='XY'):
-    #print('axe,project',axe,project)
-    #bpy.ops.object.mode_set(mode='OBJECT')
     obj_res = bpy.context.active_object
     if obj_res.type=='MESH':
         bpy.ops.object.mode_set(mode='EDIT') 
@@ -522,13 +920,13 @@ def main_align_object(axe='X',project='XY'):
     mesh = obj.data
     bm = bmesh.new()
     bm.from_mesh(mesh)  
+    check_lukap(bm)
     
     # Найдём диагональ Store
     edge_idx = config.edge_idx_store
     verts_edge_store = bm.edges[edge_idx].verts
     vec_diag_store = verts_edge_store[1].co - verts_edge_store[0].co
     
-    #obj_res = bpy.context.active_object
     # Развернем объект
     dict_axe = {'X':(1.0,0.0,0.0), 'Y':(0.0,1.0,0.0), 'Z':(0.0,0.0,1.0)}
     aa_vec = dict_axe[axe]
@@ -577,6 +975,7 @@ def main_align():
     mesh = obj.data
     bm = bmesh.new()
     bm.from_mesh(mesh)  
+    check_lukap(bm)
     
     # Найдём диагональ Store
     edge_idx = config.edge_idx_store
@@ -588,6 +987,7 @@ def main_align():
     mesh_act = obj_res.data
     bm_act = bmesh.new()
     bm_act.from_mesh(mesh_act)  
+    check_lukap(bm_act)
     
     edge_idx_act, el = bm_vert_active_get(bm_act)
     if edge_idx_act == None:
@@ -887,6 +1287,7 @@ def main_offset(x):
         if not mode_obj:
             bm_act = bmesh.new()
             bm_act.from_mesh(me) 
+            check_lukap(bm_act)
             
             verts_act = find_index_of_selected_vertex(me)
             vec = vec * obj.matrix_local
@@ -942,6 +1343,7 @@ def GetDistToCursor():
             mode = 'EDIT'
             bm = bmesh.new()
             bm.from_mesh(me) 
+            check_lukap(bm)
             elem, el = bm_vert_active_get(bm)
             if elem != None:
                 if el=='V' and bm.verts[elem].select:
@@ -982,6 +1384,7 @@ def select_v_on_plane():
     me = obj.data
     bm = bmesh.new()
     bm.from_mesh(me)
+    check_lukap(bm)
     
     P1 = me.polygons[bm.faces.active.index]
     pols = [p.index for p in me.polygons if p.select and p.index!= P1.index]
@@ -1014,111 +1417,169 @@ def crosspols():
     
     bpy.ops.object.mode_set(mode='OBJECT')  
     bpy.ops.object.mode_set(mode='EDIT')  
-    bpy.ops.mesh.select_mode(type='FACE') 
     
     me = obj.data
     
-    
     bm = bmesh.new()
     bm.from_mesh(me)
+    check_lukap(bm)
+    elem, mode = bm_vert_active_get(bm)
+    if mode == None: 
+        mode = 'F'
+        elem = bm.faces.active.index
+        
+    if mode == 'V':
+        sec_vts = find_all_connected_verts(me, elem, not_list=[])
+        
+    if mode == 'E':
+        v0 = mathutils.Vector(bm.edges[elem].verts[0].co)
+        v1 = mathutils.Vector(bm.edges[elem].verts[1].co)
+        v2 = v0+mathutils.Vector((0,0,1))
+        v3 = v1+mathutils.Vector((0,0,1))
+        p1_no_ = mathutils.geometry.normal(v0,v2,v3,v1)
+        
+    bpy.ops.mesh.select_mode(type='FACE') 
     
-    P1 = me.polygons[bm.faces.active.index]
-    pols = [p.index for p in me.polygons if p.select and p.index!= P1.index]
+    if mode == 'E':
+        pols = [p.index for p in me.polygons if p.select]
+        vts_all = [v for v in bm.verts if v.select]
+        eds_all = [e for e in bm.edges if e.select]
+        P1 = me.polygons[bm.faces.active.index]
+        list_p1co = [me.vertices[P1.vertices[0]].co]
+    elif mode == 'F':
+        P1 = me.polygons[bm.faces.active.index]
+        pols = [p.index for p in me.polygons if p.select and p.index!= P1.index]
+        vts_all = [v for v in bm.verts if v.select and v.index not in P1.vertices]
+        eds_all = [e for e in bm.edges if e.select and e.verts[0].index not in P1.vertices \
+                                                   and e.verts[1].index not in P1.vertices]
+        list_p1co = [me.vertices[P1.vertices[0]].co]
+    elif mode == 'V':
+        if config.SPLIT:
+            sec_vts = [elem]
+            
+        pols = [p.index for p in me.polygons if p.select]
+        vts_all = [v for v in bm.verts if v.select and v.index not in sec_vts]
+        eds_all = [e for e in bm.edges if e.select and e.verts[0].index not in sec_vts \
+                                                   and e.verts[1].index not in sec_vts]
+        list_p1co = [me.vertices[i].co for i in sec_vts]
+        
     sel_edges = []
     sel_verts = []
-    vts_all = [v for v in bm.verts if v.select and v.index not in P1.vertices]
-    eds_all = [e for e in bm.edges if e.select and e.verts[0].index not in P1.vertices \
-                                               and e.verts[1].index not in P1.vertices]
-    
-    if not config.filter_verts_top and not config.filter_verts_bottom and not config.filter_edges:
-        p1_co = me.vertices[P1.vertices[0]].co
-        p1_no = P1.normal
-        for pol in pols:
-            P2 = me.polygons[pol]
-            p2_co = me.vertices[P2.vertices[0]].co
-            p2_no = P2.normal
-            
-            cross_line = mathutils.geometry.intersect_plane_plane(p1_co, p1_no, p2_co, p2_no)
-            points = []
-            split_ed = []
-            for idx, edg in enumerate(P2.edge_keys):
-                pt_a = me.vertices[edg[0]].co
-                pt_b = me.vertices[edg[1]].co
+    for l_p1co in list_p1co:
+        if not config.filter_verts_top and not config.filter_verts_bottom and not config.filter_edges:
+            p1_co = l_p1co
+            if mode == 'E':
+                p1_co = v0
+                p1_no = p1_no_
+            elif mode == 'V':
+                p1_no = Vector((0,0,1))
+            else:
+                p1_no = P1.normal
+                
+            for pol in pols:
+                P2 = me.polygons[pol]
+                p2_co = me.vertices[P2.vertices[0]].co
+                p2_no = P2.normal
+                
+                cross_line = mathutils.geometry.intersect_plane_plane(p1_co, p1_no, p2_co, p2_no)
+                points = []
+                split_ed = []
+                for idx, edg in enumerate(P2.edge_keys):
+                    pt_a = me.vertices[edg[0]].co
+                    pt_b = me.vertices[edg[1]].co
+                    cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, p1_co, p1_no)
+                    if cross_pt:
+                        pose_pt = mathutils.geometry.intersect_point_line(cross_pt, pt_a, pt_b)
+                        if pose_pt[1]<=1 and pose_pt[1]>=0:
+                            points.append(pose_pt[0])
+                            split_ed.append(idx)
+                    
+                if len(points)==2:
+                    bpy.ops.mesh.select_mode(type='VERT') 
+                    if not config.SPLIT:
+                        v1=bm.verts.new(points[0])
+                        v2=bm.verts.new(points[1])
+                        bm.verts.index_update() 
+                        edge = (v1,v2)
+                        edg_i = bm.edges.new(edge)
+                        sel_edges.append(edg_i)
+                    else:
+                        """ Функция позаимствована из адона Сверчок нод Bisect """
+                        verts4cut = vts_all
+                        edges4cut = eds_all
+                        faces4cut = [fa for fa in bm.faces if fa.index in pols]
+                        edges4cut_idx = [ed.index for ed in eds_all]
+                        geom_in = verts4cut + edges4cut + faces4cut
+                        if mode!= 'V' or len(list_p1co)==1:
+                            res = bmesh.ops.bisect_plane(bm, geom=geom_in, dist=0.00001,
+                                                         plane_co=p1_co, plane_no=p1_no, use_snap_center=False,
+                                                         clear_outer=config.outer_clear, clear_inner=config.inner_clear)
+                        else:
+                            res = bmesh.ops.bisect_plane(bm, geom=geom_in, dist=0.00001,
+                                                     plane_co=p1_co, plane_no=p1_no, use_snap_center=False,
+                                                     clear_outer=False, clear_inner=False)
+                        
+                        fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
+                                                                    if isinstance(e, bmesh.types.BMEdge)])
+                        
+                        sel_edges = [e for e in fres['edges'] if e.index not in edges4cut_idx]
+                        
+                        # this needs work function with solid gemometry
+                        if config.fill_cuts and len(list_p1co)<2:
+                            fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
+                                                                        if isinstance(e, bmesh.types.BMEdge)])
+                            bmesh.ops.edgeloop_fill(bm, edges=fres['edges'])
+
+                        bm.verts.index_update()
+                        bm.edges.index_update()
+                        bm.faces.index_update()
+                        check_lukap(bm)
+                        break
+               
+        if config.filter_verts_top or config.filter_verts_bottom:
+            bpy.ops.mesh.select_mode(type='VERT') 
+            p1_co = l_p1co
+            if mode == 'E':
+                p1_co = v0
+                p1_no = p1_no_
+            elif mode == 'V':
+                p1_no = Vector((0,0,1))
+            else:
+                p1_no = P1.normal
+                
+            for v in vts_all:
+                res = mathutils.geometry.distance_point_to_plane(v.co, p1_co, p1_no)
+                if res>=0:
+                    if config.filter_verts_top:
+                        sel_verts.append(v)
+                else:
+                    if config.filter_verts_bottom:
+                        sel_verts.append(v)
+                
+        if config.filter_edges and not config.filter_verts_top and not config.filter_verts_bottom:
+            bpy.ops.mesh.select_mode(type='EDGE') 
+            p1_co = l_p1co
+            if mode == 'E':
+                p1_co = v0
+                p1_no = p1_no_
+            elif mode == 'V':
+                p1_no = Vector((0,0,1))
+            else:
+                p1_no = P1.normal
+                
+            for idx, edg in enumerate(eds_all):
+                pt_a = edg.verts[0].co
+                pt_b = edg.verts[1].co
                 cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, p1_co, p1_no)
                 if cross_pt:
                     pose_pt = mathutils.geometry.intersect_point_line(cross_pt, pt_a, pt_b)
                     if pose_pt[1]<=1 and pose_pt[1]>=0:
-                        points.append(pose_pt[0])
-                        split_ed.append(idx)
-                        
-                
-            if len(points)==2:
-                bpy.ops.mesh.select_mode(type='VERT') 
-                if not config.SPLIT:
-                    v1=bm.verts.new(points[0])
-                    v2=bm.verts.new(points[1])
-                    bm.verts.index_update() 
-                    edge = (v1,v2)
-                    edg_i = bm.edges.new(edge)
-                    sel_edges.append(edg_i)
-                else:
-                    """ Функция позаимствована из адона Сверчок нод Bisect """
-                    verts4cut = vts_all
-                    edges4cut = eds_all
-                    faces4cut = [fa for fa in bm.faces if fa.index in pols]
-                    edges4cut_idx = [ed.index for ed in eds_all]
-                    
-                    geom_in = verts4cut + edges4cut + faces4cut
-                    res = bmesh.ops.bisect_plane(bm, geom=geom_in, dist=0.00001,
-                                                 plane_co=p1_co, plane_no=p1_no, use_snap_center=False,
-                                                 clear_outer=config.outer_clear, clear_inner=config.inner_clear)
-                    
-                    fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
-                                                                if isinstance(e, bmesh.types.BMEdge)])
-                    
-                    sel_edges = [e for e in fres['edges'] if e.index not in edges4cut_idx]
-                    
-                    # this needs work function with solid gemometry
-                    if config.fill_cuts:
-                        fres = bmesh.ops.edgenet_prepare(bm, edges=[e for e in res['geom_cut']
-                                                                    if isinstance(e, bmesh.types.BMEdge)])
-                        bmesh.ops.edgeloop_fill(bm, edges=fres['edges'])
-
-                    bm.verts.index_update()
-                    bm.edges.index_update()
-                    bm.faces.index_update()
-                    break
-           
-    if config.filter_verts_top or config.filter_verts_bottom:
-        bpy.ops.mesh.select_mode(type='VERT') 
-        p1_co = me.vertices[P1.vertices[0]].co
-        p1_no = P1.normal
-        for v in vts_all:
-            res = mathutils.geometry.distance_point_to_plane(v.co, p1_co, p1_no)
-            if res>=0:
-                if config.filter_verts_top:
-                    sel_verts.append(v)
-            else:
-                if config.filter_verts_bottom:
-                    sel_verts.append(v)
-            
-    if config.filter_edges and not config.filter_verts_top and not config.filter_verts_bottom:
-        bpy.ops.mesh.select_mode(type='EDGE') 
-        p1_co = me.vertices[P1.vertices[0]].co
-        p1_no = P1.normal
-        for idx, edg in enumerate(eds_all):
-            pt_a = edg.verts[0].co
-            pt_b = edg.verts[1].co
-            cross_pt = mathutils.geometry.intersect_line_plane(pt_a, pt_b, p1_co, p1_no)
-            if cross_pt:
-                pose_pt = mathutils.geometry.intersect_point_line(cross_pt, pt_a, pt_b)
-                if pose_pt[1]<=1 and pose_pt[1]>=0:
-                    sel_edges.append(edg)
+                        sel_edges.append(edg)
             
     bm.edges.index_update()
     for v in bm.verts:
         v.select_set(False)
-        bm.select_flush(False)
+    bm.select_flush(False)
     for ed in sel_edges:
         ed.select=True
     for ed in sel_verts:
@@ -1178,6 +1639,7 @@ def main_spline(context, mode, influe):
         bpy.ops.object.mode_set(mode='OBJECT') 
         bm = bmesh.new()
         bm.from_mesh(me)
+        check_lukap(bm)
         
         pa_idx = bm_vert_active_get(bm)[0]
         if pa_idx==None:
@@ -1293,6 +1755,7 @@ def main_B_spline(context, mode, influe):
         bpy.ops.object.mode_set(mode='OBJECT') 
         bm = bmesh.new()
         bm.from_mesh(me)
+        check_lukap(bm)
         
         pa_idx = bm_vert_active_get(bm)[0]
         if pa_idx==None:
@@ -1481,6 +1944,7 @@ def main_B_spline_2(context, mode, influe):
         bpy.ops.object.mode_set(mode='OBJECT') 
         bm = bmesh.new()
         bm.from_mesh(me)
+        check_lukap(bm)
         
         pa_idx = bm_vert_active_get(bm)[0]
         if pa_idx==None:
@@ -1726,6 +2190,7 @@ def main_Basier_mid(context, mode, influe):
         bpy.ops.object.mode_set(mode='OBJECT') 
         bm = bmesh.new()
         bm.from_mesh(me)
+        check_lukap(bm)
         
         pa_idx = bm_vert_active_get(bm)[0]
         if pa_idx==None:
@@ -2144,6 +2609,7 @@ def main_matExtrude(context):
     
     bm = bmesh.new()
     bm.from_mesh(me)
+    check_lukap(bm)
     
     verts = find_all_connected_verts(me,vert)
     vts = [bm.verts[vr] for vr in verts]
@@ -2186,6 +2652,560 @@ def main_matExtrude(context):
     bpy.ops.mesh.remove_doubles()
 
 
+def cheredator(step=1):
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    active = None
+    if verts != None:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        if extreme_vs==[]:
+            bm = bmesh.new()
+            bm.from_mesh(me) 
+            check_lukap(bm)
+            active = bm_vert_active_get(bm)[0]
+            extreme_vs = [active,active]
+            bm.free()
+        elif len(extreme_vs) != 2:
+            print_error2('Single Loop only', '01 cheredator')
+            return False
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        if len(sort_list) != len(verts) and not active:
+            print_error2('Incoherent loop','02 cheredator')
+            return False
+        
+        if len(sort_list) <3:
+            print_error2('Should be greater than two vertices','03 cheredator')
+            return False
+        
+        work_list = sort_list[1:-1]
+        
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bpy.ops.mesh.select_mode(type='VERT')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        v_memory = [str(me.vertices[extreme_vs[0]].co)]
+        v_memory.append(str(me.vertices[extreme_vs[1]].co))
+        most = False
+        data_verts = []
+        step_tmp = 0
+        for i in work_list:
+            step_tmp += 1
+            if step_tmp>=step:
+                most = True
+                step_tmp = 0
+            if most: 
+                me.vertices[i].select = False
+                v_memory.append(str(me.vertices[i].co))
+                most = False
+            else:
+                me.vertices[i].select = True
+        
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.dissolve_verts()
+        bpy.ops.mesh.select_all(action='DESELECT') 
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+        for v in me.vertices:
+            if str(v.co) in v_memory:
+                v.select = True
+                
+        bpy.ops.object.mode_set(mode='EDIT') 
+        
+        return True
+
+
+def cheredator_fantom(self):
+    step = self.steps
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    active = None
+    if verts != None:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        if extreme_vs==[]:
+            bm = bmesh.new()
+            bm.from_mesh(me) 
+            check_lukap(bm)
+            active = bm_vert_active_get(bm)[0]
+            extreme_vs = [active,active]
+            bm.free()
+        elif len(extreme_vs) != 2:
+            print_error2('Single Loop only', '01 cheredator_fantom')
+            return False
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        
+        if len(sort_list) != len(verts) and not active:
+            print_error2('Incoherent loop','02 cheredator_fantom')
+            return False
+        
+        if len(sort_list) <3:
+            print_error2('Should be greater than two vertices','03 cheredator_fantom')
+            return False
+        
+        work_list = sort_list[1:-1]
+        if self.steps>len(work_list):
+            self.steps = len(work_list)
+        
+        bpy.ops.mesh.select_mode(type='VERT')
+        
+        most = False
+        data_verts = []
+        step_tmp = 0
+        for i in work_list:
+            step_tmp += 1
+            if step_tmp>=step:
+                most = True
+                step_tmp = 0
+            if most: 
+                data_verts.append(me.vertices[i].co)
+                most = False
+        
+        data_verts.insert(0, me.vertices[extreme_vs[0]].co)
+        data_verts.append(me.vertices[extreme_vs[1]].co)
+        drawPointLineGL(obj.matrix_world, data_verts)
+    return True
+    
+
+def drawPointLineGL(data_matrix, data_vector):
+    from bgl import glVertex3f, glPointSize, glLineStipple, \
+                glLineWidth, glBegin, glEnd, GL_POINTS, GL_LINES, \
+                glEnable, glDisable, GL_BLEND, glColor4f, GL_LINE_STRIP, GL_LINE_STIPPLE
+    
+    glLineWidth(1.0)
+    glEnable(GL_BLEND)
+    # points
+    glPointSize(6.0)
+    glColor4f(1.0, 0.0, 0.0, 1.0)
+    glBegin(GL_POINTS)
+    for vert in data_vector:
+        vec_corrected = data_matrix*vert
+        glVertex3f(*vec_corrected)
+    glEnd()
+    
+    # lines
+    glLineWidth(3.0)
+    glBegin(GL_LINE_STRIP)
+    glColor4f(0.0, 1.0, 0.0, 1.0)
+    for i, vector in enumerate(data_vector):
+        glVertex3f(*data_matrix*data_vector[i])
+    glEnd()
+    
+    # restore opengl defaults
+    glDisable(GL_BLEND)
+    glLineWidth(1.0)
+    glColor4f(0.0, 0.0, 0.0, 1.0)
+    
+
+def DDDLoop():
+    obj = bpy.context.active_object
+    if obj.type != 'MESH':
+        print_error('You need to select object of MESH type', '3DL_00')
+        return False
+    
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT')  
+    me = obj.data
+
+    selected_verts = [i.index for i in me.vertices if i.select] 
+    if not selected_verts:
+        print_error('You need to select two loops', '3DL_01')
+        return False
+        
+        
+    act_v = selected_verts[0]
+    black_list=[]
+    loop_1 = find_all_connected_verts(me, act_v, black_list, 0)
+    white_list = [i for i in selected_verts if i not in black_list]
+    if not white_list:
+        print_error('You need to select two loops', '3DL_02')
+        return False
+
+    loop_2 = find_all_connected_verts(me, white_list[0], [], 0)
+
+    loop1_x = [me.vertices[idx].co.x for idx in loop_1]
+    loop1_y = [me.vertices[idx].co.y for idx in loop_1]
+
+    direct1_x = max(loop1_x)-min(loop1_x)    
+    direct1_y = max(loop1_y)-min(loop1_y)
+    if direct1_x > direct1_y:
+        loop_xz = loop_1
+        loop_yz = loop_2
+    else:
+        loop_xz = loop_2
+        loop_yz = loop_1
+    
+    tmp_x = [(me.vertices[idx].co.z, idx) for idx in loop_xz]
+    tmp_y = [(me.vertices[idx].co.z, idx) for idx in loop_yz]
+    tmp_x.sort()
+    tmp_y.sort()
+    loop_xz = [p[1] for p in tmp_x]
+    loop_yz = [p[1] for p in tmp_y]
+    
+    lz_xz = [me.vertices[idx].co.z for idx in loop_xz]
+    lz_yz = [me.vertices[idx].co.z for idx in loop_yz]
+    lz = lz_xz+lz_yz
+    
+    lz.sort()
+    points = []
+    
+    plxz = me.vertices[loop_xz[0]].co
+    for lxz in loop_xz[1:]:
+        co = me.vertices[lxz].co
+        for z in lz:
+            if z>=plxz.z and z<=co.z:
+                delitel = co.z-plxz.z
+                if delitel==0: delitel=1e-6
+                x = (z-plxz.z)*(co.x-plxz.x)/delitel+plxz.x
+                points.append([z, 0, x])
+            elif z>co.z:
+                continue
+        plxz = co
+            
+    plyz = me.vertices[loop_yz[0]].co
+    for lyz in loop_yz[1:]:
+        co = me.vertices[lyz].co
+        for z in lz:
+            if z>=plyz.z and z<=co.z:
+                delitel = co.z-plyz.z
+                if delitel==0: delitel=1e-6
+                y = (z-plyz.z)*(co.y-plyz.y)/delitel+plyz.y
+                points.append([z, y, 0])
+            elif z>co.z:
+                continue
+        plyz = co
+    
+    points.sort()
+    plxz = me.vertices[loop_xz[0]].co
+    for lxz in loop_xz[1:]:
+        co = me.vertices[lxz].co
+        for idx, p in enumerate(points):
+            if p[0]>=plxz.z and p[0]<=co.z and p[2]==0:
+                delitel = co.z-plxz.z
+                if delitel==0: delitel=1e-6
+                x = (p[0]-plxz.z)*(co.x-plxz.x)/delitel+plxz.x
+                points[idx] = (p[0], p[1], x)
+            elif p[0]>co.z:
+                continue
+        plxz = co
+                
+    plyz = me.vertices[loop_yz[0]].co
+    for lyz in loop_yz[1:]:
+        co = me.vertices[lyz].co
+        for idx, p in enumerate(points):
+            if p[0]>=plyz.z and p[0]<=co.z and p[1]==0:
+                delitel = co.z-plyz.z
+                if delitel==0: delitel=1e-6
+                y = (p[0]-plyz.z)*(co.y-plyz.y)/delitel+plyz.y
+                points[idx] = (p[0], y, p[2])
+            elif p[0]>co.z:
+                continue
+        plyz = co
+    
+    points_=[]
+    for p in points[1:]:
+        points_.append(mathutils.Vector(reversed(p)))
+    
+    edges = []
+    lvs = len(me.vertices)
+    for idx, po in enumerate(points_[:-1]):
+        edges.append([idx, idx+1])
+    
+    bpy.ops.mesh.select_all(action='TOGGLE')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    nam = 'slurm_' + str(obj.name)
+    mesh = bpy.data.meshes.new(nam+'Mesh') 
+    ob = mk_ob(mesh,nam, obj.location)
+    
+    mesh.from_pydata(points_, edges, [])
+    mesh.update(calc_edges=True) 
+    ob.select=True
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.join()
+     
+    bpy.ops.object.mode_set(mode='EDIT') 
+    maloe = bpy.context.scene.tool_settings.double_threshold
+    bpy.ops.mesh.remove_doubles(threshold=maloe, use_unselected=False)  
+
+
+def barc(rad):
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    bpy.ops.object.mode_set(mode='EDIT') 
+    
+    obj = bpy.context.active_object
+    me = obj.data
+
+    verts = find_index_of_selected_vertex(me)
+    cou_vs = len(verts) - 1
+    if verts != None and cou_vs>0:
+        extreme_vs = find_extreme_select_verts(me, verts)
+        if len(extreme_vs) != 2:
+            print_error2('Single Loop only', '01 barc')
+            return False
+        
+        sort_list = find_all_connected_verts(me,extreme_vs[0],[])
+        if len(sort_list) != len(verts):
+            print_error2('Incoherent loop','02 barc')
+            return False
+        
+        bpy.ops.object.mode_set(mode='OBJECT') 
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        check_lukap(bm)
+        
+        pa_idx = bm_vert_active_get(bm)[0]
+        if pa_idx==None:
+            print_error2('Active vert is not detected','03 barc')
+            return False
+        
+        p_a_ = me.vertices[extreme_vs[0]].co
+        p_b_ = me.vertices[pa_idx].co
+        p_c_ = me.vertices[extreme_vs[1]].co
+        
+        normal_B = getNormalPlane([p_a_, p_b_, p_c_], mathutils.Matrix())
+        normal_z = mathutils.Vector((0,0,-1))
+        mat_rot_norm = normal_B.rotation_difference(normal_z).to_matrix().to_4x4()
+        
+        p_a = mat_rot_norm * p_a_
+        p_b = mat_rot_norm * p_b_
+        p_c = mat_rot_norm * p_c_
+        p_ab = (p_a+p_b)/2
+        p_bc = (p_b+p_c)/2
+        ab = p_b-p_a
+        bc = p_c-p_b
+        k_ab = -ab.y/(ab.x+1e-7)
+        k_bc = -bc.y/(bc.x+1e-7)
+        z = p_a.z
+        ab_d = mathutils.Vector((k_ab,1,0)).normalized()
+        bc_d = mathutils.Vector((k_bc,1,0)).normalized()
+        p_d_ = mathutils.geometry.intersect_line_line(p_ab, p_ab+ab_d, p_bc, p_bc+bc_d)
+        if p_d_==None:
+            print_error2('Impossible to construct the arc radius','04 barc')
+            return False
+        
+        p_d = p_d_[0]
+        ad = p_a-p_d
+        config = bpy.context.window_manager.paul_manager
+        if rad!=None:
+            radius = rad
+            ac = p_c-p_a
+            p_d_ = p_a+ac/2
+            ac_div_2_len = ac.length/2
+            k_ac = -ac.y/(ac.x+1e-7)
+            ac_d = mathutils.Vector((k_ac,1,0)).normalized()
+            if rad<ac_div_2_len:
+                radius = ac_div_2_len
+            
+            l1 = (p_b-(p_d_+ac_d)).length
+            l2 = (p_b-(p_d_-ac_d)).length
+            if l2>l1:
+                ac_d = -ac_d
+            
+            tmp_ld = sqrt(radius**2-ac_div_2_len**2)
+            p_d = tmp_ld*ac_d+p_d_
+            ad = p_a-p_d
+            
+        else:
+            radius = ad.length
+        
+        config.barc_rad = radius
+        angle = ad.angle(p_c-p_d)
+        section_angle = angle/(len(sort_list)-1)
+        vector_zero = mathutils.Vector((1,0,0))
+        angle_zero = pi/2+ad.angle(vector_zero)
+        test_x = sin(section_angle*(len(sort_list)-1)+angle_zero)*radius+p_d.x
+        test_y = cos(section_angle*(len(sort_list)-1)+angle_zero)*radius+p_d.y
+        test_by_x = abs(test_x-p_c.x)<maloe
+        test_by_y = abs(test_y-p_c.y)<maloe
+        if not test_by_x or not test_by_y:
+            angle_zero = pi/2-ad.angle(vector_zero)
+            test_x = sin(angle_zero)*radius+p_d.x
+            test_y = cos(angle_zero)*radius+p_d.y
+            test_by_x = abs(test_x-p_a.x)<maloe
+            test_by_y = abs(test_y-p_a.y)<maloe
+            if not test_by_x or not test_by_y:
+                angle = 2*pi-angle
+                angle_zero = pi/2+ad.angle(vector_zero)
+                section_angle = angle/(len(sort_list)-1)
+            else:
+                test_x = sin(section_angle*(len(sort_list)-1)+angle_zero)*radius+p_d.x
+                test_y = cos(section_angle*(len(sort_list)-1)+angle_zero)*radius+p_d.y
+                test_by_x = abs(test_x-p_c.x)<maloe
+                test_by_y = abs(test_y-p_c.y)<maloe
+                if not test_by_x or not test_by_y:
+                    angle = 2*pi-angle
+                    angle_zero = pi/2-ad.angle(vector_zero)
+                    section_angle = angle/(len(sort_list)-1)
+        
+        mat_rot_norm_inv = mat_rot_norm.inverted()
+        for i, v_idx in enumerate(sort_list):
+            x = sin(section_angle*i+angle_zero)*radius+p_d.x
+            y = cos(section_angle*i+angle_zero)*radius+p_d.y
+            me.vertices[v_idx].co = mat_rot_norm_inv * Vector((x,y,z))
+        
+
+def ignore_instance():
+    names = {}
+    for obj in bpy.data.objects:
+        if not obj.select \
+            or obj.type!='MESH' and obj.type!='CURVE': continue
+        
+        dataname = obj.type+obj.data.name 
+        
+        if dataname in names:
+            obj.select = False
+            bpy.data.objects[names[dataname]].select = False
+        else:
+            names[dataname]=obj.name
+
+
+def select_modifiers_objs():
+    for obj in bpy.data.objects:
+        if obj.type!='MESH' and obj.type!='CURVE': continue
+        obj.select = len(obj.modifiers)>0
+
+
+def switch_matnodes():
+    flag = False
+    mode = False
+    for mat in bpy.data.materials:
+        if not flag:
+            mode = not mat.use_nodes
+            flag = True
+        mat.use_nodes = mode
+        
+        
+def all_mats_to_active():
+    obj = bpy.context.scene.objects.active
+    if obj:
+        mats = []
+        for mat in obj.material_slots:
+            mats.append(mat.name)
+        for m in bpy.data.materials:
+            if m.name not in mats:
+                bpy.ops.object.material_slot_add()
+                obj.material_slots[-1].material = bpy.data.materials[m.name]
+                
+
+def select_2d_curves():
+    for obj in bpy.data.objects:
+        if not obj.select: continue
+        if obj.type!='CURVE': 
+            obj.select = False
+        elif obj.data.dimensions!='2D':
+            obj.select = False
+        
+
+def filter_dubles_origins():
+    global maloe
+    locs = []
+    for obj in bpy.context.scene.objects:
+        if obj.type=='CURVE' or obj.type=='MESH':
+            loc = obj.location
+            flag = False
+            for l in locs:
+                ll = (l-loc).length
+                if ll < maloe:
+                    flag = True
+                    break
+            
+            obj.select = flag
+            if not flag:
+                locs.append(loc)
+            
+
+def swap_curve():
+    i = None
+    dim = {'2D':'3D', '3D':'2D'}
+    for obj in bpy.context.selected_objects:
+        if obj.type=='CURVE':
+            if i==None:
+                i = dim[obj.data.dimensions]
+            obj.data.dimensions=i
+
+
+def hue_2matneme():
+    for matik in bpy.data.materials:
+        H_ = min(round(matik.diffuse_color.h, 2),0.99)
+        V_ = min(round(matik.diffuse_color.v, 2),0.99)
+        S_ = min(round(matik.diffuse_color.s, 2),0.99)
+        
+        H = ("%.2f"%(H_))[-2:]
+        V = ("%.2f"%(V_))[-2:]
+        S = ("%.2f"%(S_))[-2:]
+        
+        name_ = matik.name.split('---')[-1]
+        mat_name = H+V+S+'---'+name_
+        matik.name = mat_name
+
+
+def HVS_from_mathame():
+    for matik in bpy.data.materials:
+        mat_name = matik.name.split('---')[-1]
+        matik.name = mat_name
+
+
+def supress_materials():
+    all_mats = {}
+    del_mats = []
+    for matik in bpy.data.materials:
+        name = matik.name
+        diffcolor = str(matik.diffuse_color.r)+str(matik.diffuse_color.g)+ \
+                    str(matik.diffuse_color.b)
+        if diffcolor in all_mats:
+            del_mats.append(name)
+        else:
+            all_mats[diffcolor] = name
+
+    for obj in bpy.data.objects:
+        for m in obj.material_slots:
+            mat = m.material
+            if mat==None: continue
+            diffcolor_ = str(mat.diffuse_color.r)+str(mat.diffuse_color.g)+ \
+                         str(mat.diffuse_color.b)
+            m.material = bpy.data.materials[all_mats[diffcolor_]]
+            
+    for del_m in del_mats:
+        dm = bpy.data.materials[del_m]
+        bpy.data.materials.remove(dm)
+
+
+def matsUnclone():
+    mats = bpy.data.materials
+    for obj in bpy.data.objects:
+        for slt in obj.material_slots:
+            part = slt.name.rpartition('.')
+            if part[2].isnumeric() and part[0] in mats:
+                slt.material = mats.get(part[0])
+
+
+def matsPurgeout():
+    bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
+    for ob in bpy.context.selected_objects:
+         bpy.context.scene.objects.active = ob
+         if ob.type != 'MESH':
+             continue
+         mat_slots = {}
+         for p in ob.data.polygons:
+             mat_slots[p.material_index] = 1
+         mat_slots = mat_slots.keys()
+         for i in range(len(ob.material_slots)-1, -1, -1):
+             if i not in mat_slots:
+                 bpy.context.object.active_material_index = i
+                 bpy.ops.object.material_slot_remove()
+    
+    
 class LayoutSSPanel(bpy.types.Panel):
     def axe_select(self, context):
         axes = ['X','Y','Z']
@@ -2301,7 +3321,7 @@ class LayoutSSPanel(bpy.types.Panel):
             row = col_top.row(align=True)
             split = col_top.split(percentage=0.76)
             split.prop(lt,'step_len', text = 'dist')
-            getlenght_op = split.operator("mesh.offset_operator", text="Get dist").type_op = 1
+            getlenght_op = split.operator("mesh.offset_operator", text="Restore").type_op = 1
             row = col_top.row(align=True)
             split = col_top.split(percentage=0.5)
             left_op = split.operator("mesh.offset_operator", text="", icon='TRIA_LEFT')
@@ -2330,6 +3350,8 @@ class LayoutSSPanel(bpy.types.Panel):
             col_top = box.column(align=True)
             row = col_top.row(align=True)
             row.operator("mesh.align_operator", text = 'Store key').type_op = 3
+            row = col_top.row(align=True)
+            row.operator("mesh.align_operator", text = 'mirrorside').type_op = 7
             row = col_top.row(align=True)
             split = row.split(0.33, True)
             split.scale_y = 1.5
@@ -2395,7 +3417,307 @@ class LayoutSSPanel(bpy.types.Panel):
             row.operator("mesh.get_mat4extrude", text='Get Mats')
             row = col_top.row(align=True) 
             row.operator("mesh.mat_extrude", text='Template Extrude')
+        
+        split = col.split()
+        if lt.disp_projectloop:
+            split.prop(lt, "disp_projectloop", text="3DLoop", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_projectloop", text="3DLoop", icon='RIGHTARROW')
             
+        if lt.disp_projectloop:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("mesh.projectloop", text='Project 3DLoop')
+        
+        split = col.split(percentage=0.15)
+        if lt.disp_barc:
+            split.prop(lt, "disp_barc", text="", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_barc", text="", icon='RIGHTARROW')
+        
+        split.operator("mesh.barc", text='Create B-Arc').type_op=0
+        if lt.disp_barc:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.prop(lt,"barc_rad", text="Radius")
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("mesh.barc", text="Set radius").type_op=1
+        
+        split = col.split()
+        if lt.disp_fedge:
+            split.prop(lt, "disp_fedge", text="Fedge", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_fedge", text="Fedge", icon='RIGHTARROW')
+        
+        if lt.disp_fedge:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("object.fedge", text='fedge')
+            row = col_top.row(align=True)
+            row.prop(lt, 'fedge_verts', text = 'verts')
+            row = col_top.row(align=True)
+            row.prop(lt, 'fedge_edges', text = 'edges')
+            row = col_top.row(align=True)
+            row.prop(lt, 'fedge_three', text = 'nonquad')
+            row = col_top.row(align=True)
+            split = row.split(0.4, True)
+            split.prop(lt, 'fedge_zerop', text = 'area')
+            split.prop(lt, 'fedge_WRONG_AREA', text = '')
+            
+        split = col.split()
+        if lt.disp_misc:
+            split.prop(lt, "disp_misc", text="Misc", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_misc", text="Misc", icon='RIGHTARROW')
+        
+        if lt.disp_misc:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Mats all to active').type_op=8
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Mats supress RGB').type_op=4
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Mats Unclone').type_op=11
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Mats Purgeout').type_op=12
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Matname HVS set').type_op=9
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Matname HVS del').type_op=10
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Matnodes switch').type_op=7
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Obj select modified').type_op=6
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Obj ignore instances').type_op=0
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Obj filter dupes').type_op=2
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Curve select 2D').type_op=1
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='Curve swap 2D/3D').type_op=3
+            row = col_top.row(align=True)
+            row.operator("mesh.modal_cheredator", text='Ed reduce x2')
+        
+        if context.mode == 'EDIT_MESH':
+            split = col.split()
+            if lt.disp_eap:
+                split.prop(lt, "disp_eap", text="Extrude Along Path", icon='DOWNARROW_HLT')
+            else:
+                split.prop(lt, "disp_eap", text="Extrude Along Path", icon='RIGHTARROW')
+            
+            if lt.disp_eap:
+                box = col.column(align=True).box().column()
+                col_top = box.column(align=True)
+                row = col_top.split(0.60, align = True)
+                row.label('Path:')
+                row.operator('eap.op0_id', text = 'Store')
+                row = col_top.split(0.60, align = True)
+                row.label('Start point:')
+                row.operator('eap.op1_id', text = 'Store')
+                col_top = box.column(align=True)
+                row = col_top.row(align=True)
+                row.operator('eap.op2_id', text = 'Extrude')
+        
+        split = col.split()
+        split.operator("script.paul_update_addon", text = 'Auto update')
+            
+
+class D1_fedge(bpy.types.Operator):
+    ''' \
+    Select loose parts. edges first, vertices second, non-quad polygons third. \
+    Выделяет потеряные рёбра, потом вершины и грани, каждый раз вызываясь. \
+    '''
+    bl_idname = "object.fedge"
+    bl_label = "Fffedge"
+
+    selected_show = False
+    selected_hide = False
+    
+
+    def make_edges(self, edges):
+        for e in edges:
+            if e.is_loose:
+                return True
+        return False
+    
+    # makes indexes set for compare with vertices 
+    # in object and find difference
+    def make_indeces(self, list, vertices):
+        for e in list:
+            for i in e.vertices:
+                vertices.add(i)
+
+    def make_areas(self, pols):
+        config = bpy.context.window_manager.paul_manager
+        zerop = config.fedge_zerop
+        three = config.fedge_three
+        WRONG_AREA = config.fedge_WRONG_AREA
+        for p in pols:
+            if p.area <= WRONG_AREA and zerop:
+                return True
+            if len(p.vertices) == 3 and three:
+                return True
+        return False
+    
+    def verts(self, obj,selected_hide,selected_show):
+        # stage two verts
+        config = bpy.context.window_manager.paul_manager
+        if not config.fedge_verts:
+            return selected_show, selected_hide
+        bpy.ops.mesh.select_mode(type='VERT')
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bpy.ops.object.editmode_toggle()
+        vertices = set()
+        self.make_indeces(obj.data.edges, vertices)
+        self.make_indeces(obj.data.polygons, vertices)
+        for i, ver in enumerate(obj.data.vertices):
+            if i not in vertices and not ver.hide:
+                ver.select = True
+                selected_show = True
+            elif i not in vertices and ver.hide:
+                selected_hide = True
+        bpy.ops.object.editmode_toggle()
+        return selected_show, selected_hide
+    
+    def edges(self, obj,selected_hide,selected_show):
+        # stage one edges
+        config = bpy.context.window_manager.paul_manager
+        if not config.fedge_edges:
+            return selected_show, selected_hide
+        if not selected_show:
+            bpy.ops.mesh.select_mode(type='EDGE')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.editmode_toggle()
+            for edg in obj.data.edges:
+                if edg.is_loose and not edg.hide:
+                    edg.select = True
+                    selected_show = True
+                elif edg.is_loose and edg.hide:
+                    selected_hide = True
+            bpy.ops.object.editmode_toggle()
+        return selected_show, selected_hide
+
+    def zero(self, obj,selected_hide,selected_show):
+        #stage area 0
+        config = bpy.context.window_manager.paul_manager
+        WRONG_AREA = config.fedge_WRONG_AREA
+        if not config.fedge_zerop:
+            return selected_show, selected_hide
+        if not selected_show:
+            bpy.ops.mesh.select_mode(type='FACE')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.editmode_toggle()
+            for pol in obj.data.polygons:
+                if pol.area <= WRONG_AREA and not pol.hide:
+                    pol.select = True
+                    selected_show = True
+                elif pol.area <= WRONG_AREA and pol.hide:
+                    selected_hide = True
+            bpy.ops.object.editmode_toggle()
+        return selected_show, selected_hide
+
+    def three(self, obj,selected_hide,selected_show):
+        #stage three polygons
+        config = bpy.context.window_manager.paul_manager
+        if not config.fedge_three:
+            return selected_show, selected_hide
+        if not selected_show:
+            bpy.ops.mesh.select_mode(type='FACE')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.editmode_toggle()
+            for pol in obj.data.polygons:
+                if len(pol.vertices) != 4 and not pol.hide:
+                    pol.select = True
+                    selected_show = True
+                elif len(pol.vertices) != 4 and pol.hide:
+                    selected_hide = True
+            bpy.ops.object.editmode_toggle()
+        return selected_show, selected_hide
+
+    def select_loose_objt(self):
+        config = bpy.context.window_manager.paul_manager
+        objects = bpy.context.selected_objects
+        if not objects:
+            print_error2('Fedge founds no objects selected. '+ \
+                'Select objects or enter edit mode.', '01 fedge')
+            return
+        bpy.ops.object.select_all(action='DESELECT')
+
+        def dosel(obj, renam):
+            obj.select = True
+            if obj.name[:9] != '__empty__' and renam:
+                obj.name = '__empty__' + obj.name
+
+        for obj in objects:
+            if obj.type != 'MESH':
+                continue
+            data = obj.data
+            # zero-verts objs
+            if config.fedge_empty:
+                if not len(data.vertices):
+                    dosel(obj,True)
+            # loose verts objs
+            if config.fedge_verts:
+                vertices = set()
+                self.make_indeces(data.edges, vertices)
+                self.make_indeces(data.polygons, vertices)
+                v = set([i for i in range(len(data.vertices))])
+                if v.difference(vertices):
+                    dosel(obj,False)
+            # zero area pols condition in def
+            if config.fedge_zerop:
+                if self.make_areas(obj.data.polygons):
+                    dosel(obj,False)
+            # loose edges
+            if config.fedge_edges:
+                if self.make_edges(data.edges):
+                    dosel(obj,False)
+            # triangles
+            if config.fedge_three:
+                for p in data.polygons:
+                    if len(p.vertices) == 3:
+                        dosel(obj,False)
+            #print(obj.name, obj.select)
+                
+    def select_loose_edit(self):
+        obj = bpy.context.active_object
+        selected_show = False
+        selected_hide = False
+
+
+        # stage two verts
+        selected_show, selected_hide = self.verts(obj,selected_hide,selected_show)
+        # stage one edges
+        selected_show, selected_hide = self.edges(obj,selected_hide,selected_show)
+        #stage three polygons
+        selected_show, selected_hide = self.three(obj,selected_hide,selected_show)
+        #stage area 0
+        selected_show, selected_hide = self.zero(obj,selected_hide,selected_show)
+        # object mode if mesh clean
+        if selected_show:
+            self.report({'INFO'}, \
+                'FEDGE: Found something')
+        elif selected_hide:
+            self.report({'INFO'}, \
+                'FEDGE: Nothing found (but hidden)')
+        else:
+            bpy.ops.object.editmode_toggle()
+            self.report({'INFO'}, \
+                'FEDGE: Your object is clean')
+
+    def execute(self, context):
+        if bpy.context.mode == 'OBJECT':
+            self.select_loose_objt()
+        elif bpy.context.mode == 'EDIT_MESH':
+            self.select_loose_edit()
+        return {'FINISHED'}
+
         
 class MatExrudeOperator(bpy.types.Operator):
     """Extude with mats"""
@@ -2478,6 +3800,82 @@ class CrossPolsOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class Project3DLoopOperator(bpy.types.Operator):
+    bl_idname = "mesh.projectloop"
+    bl_label = "Project 3D Loop"
+    bl_options = {'REGISTER', 'UNDO'} 
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        
+        DDDLoop()
+        return {'FINISHED'}
+
+
+class BarcOperator(bpy.types.Operator):
+    bl_idname = "mesh.barc"
+    bl_label = "BARC"
+    bl_options = {'REGISTER', 'UNDO'} 
+    
+    type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        if self.type_op==0:
+            barc(None)
+        else:
+            barc(bpy.context.window_manager.paul_manager.barc_rad)
+        bpy.ops.object.mode_set(mode='EDIT') 
+        return {'FINISHED'}
+    
+
+class MiscOperator(bpy.types.Operator):
+    bl_idname = "object.misc"
+    bl_label = "Misc"
+    bl_options = {'REGISTER', 'UNDO'} 
+    
+    type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        if self.type_op==0:
+            ignore_instance()
+        elif self.type_op==1:
+            select_2d_curves()
+        elif self.type_op==2:
+            filter_dubles_origins()
+        elif self.type_op==3:
+            swap_curve()
+        elif self.type_op==4:
+            supress_materials()
+        elif self.type_op==5:
+            context.scene['cheredator']=cheredator()
+        elif self.type_op==6:
+            select_modifiers_objs()
+        elif self.type_op==7:
+            switch_matnodes()
+        elif self.type_op==8:
+            all_mats_to_active()
+        elif self.type_op==9:
+            hue_2matneme()
+        elif self.type_op==10:
+            HVS_from_mathame()
+        elif self.type_op==11:
+            matsUnclone()
+        elif self.type_op==12:
+            matsPurgeout()
+        return {'FINISHED'}
+
+
 class SpreadOperator(bpy.types.Operator):
     """Tooltip"""
     bl_idname = "mesh.spread_operator"
@@ -2517,16 +3915,23 @@ class AlignOperator(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'} 
     
     type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    dist = bpy.props.FloatProperty(name='dist', precision=4)
+    dist_x = bpy.props.FloatProperty(name='X', precision=4)
+    dist_y = bpy.props.FloatProperty(name='Y', precision=4)
+    dist_z = bpy.props.FloatProperty(name='Z', precision=4)
     
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
+        config = bpy.context.window_manager.paul_manager
         if self.type_op==1:
             store_align()
-            config = bpy.context.window_manager.paul_manager
             config.step_len = GetStoreVecLength()
+            self.dist_x = Vector(config.vec_store).x
+            self.dist_y = Vector(config.vec_store).y
+            self.dist_z = Vector(config.vec_store).z
         elif self.type_op==0:
             main_align()
         elif self.type_op==2:
@@ -2543,10 +3948,13 @@ class AlignOperator(bpy.types.Operator):
         elif self.type_op==5:
             # 3D Match
             match3D(False)
-        else:
+        elif self.type_op==6:
             # 3d Match Flip
             match3D(True)
+        elif self.type_op==7:
+            mirrorside()
         
+        self.dist = config.step_len
         return {'FINISHED'}
 
 
@@ -2566,17 +3974,18 @@ class OffsetOperator(bpy.types.Operator):
     def execute(self, context):
         config = bpy.context.window_manager.paul_manager
         if self.type_op==0:     # move left / right
+            ao=bpy.context.active_object.name
+            l_obj=[]
+            for obj_a in bpy.context.selected_objects:
+                l_obj.append(obj_a.name)
             if config.shift_copy:
                 if bpy.context.mode=='OBJECT':
-                    l_obj=[]
-                    ao=bpy.context.active_object.name
-                    for obj_a in bpy.context.selected_objects:
-                        l_obj.append(obj_a.name)
                     for obj_a in bpy.context.selected_objects:
                         bpy.context.scene.objects.active = obj_a
-                        bpy.ops.object.duplicate(linked=config.instance)
                         bpy.ops.object.select_all(action='DESELECT')
                         bpy.ops.object.select_pattern(pattern=obj_a.name)
+                        bpy.ops.object.duplicate(linked=config.instance)
+                        
                     for obj_a_name in l_obj:
                         bpy.context.scene.objects[obj_a_name].select=True
                     bpy.context.scene.objects.active = bpy.data.objects[ao]
@@ -2586,9 +3995,16 @@ class OffsetOperator(bpy.types.Operator):
                 
             x = config.step_len * self.sign_op
             if bpy.context.mode=='OBJECT':
-                for obj_a in bpy.context.selected_objects:
+                for obj_a_ in l_obj:
+                    obj_a = bpy.context.scene.objects[obj_a_]
                     bpy.context.scene.objects.active = obj_a
+                    bpy.ops.object.select_all(action='DESELECT')
+                    bpy.ops.object.select_pattern(pattern=obj_a.name)
                     main_offset(x)
+                    
+                for obj_a_name in l_obj:
+                    bpy.context.scene.objects[obj_a_name].select=True
+                bpy.context.scene.objects.active = bpy.data.objects[ao]
             else:
                 main_offset(x)
         
@@ -2698,8 +4114,22 @@ class paul_managerProps(bpy.types.PropertyGroup):
     shape_inf = bpy.props.IntProperty(name="shape_inf", min=0, max=200, default = 0)
     shape_spline = bpy.props.BoolProperty(name="shape_spline", default = False)
     spline_Bspline2 = bpy.props.BoolProperty(name="spline_Bspline2", default = True)
+    barc_rad = bpy.props.FloatProperty(name="barc_rad")
     
     disp_matExtrude = bpy.props.BoolProperty(name = 'disp_matExtrude', default = False)
+    disp_projectloop = bpy.props.BoolProperty(name = 'disp_projectloop', default = False)
+    disp_barc = bpy.props.BoolProperty(name = 'disp_barc', default = False)
+    disp_misc = bpy.props.BoolProperty(name = 'disp_misc', default = False)
+    disp_eap = bpy.props.BoolProperty(name = 'disp_eap', default = False)
+    disp_fedge = bpy.props.BoolProperty(name = 'disp_eap', default = False)
+    
+    fedge_verts = BoolProperty(name='verts', default=True)
+    fedge_edges = BoolProperty(name='edges', default=True)
+    fedge_zerop = BoolProperty(name='zerop', default=True)
+    fedge_empty = BoolProperty(name='empty', default=True)
+    fedge_three = BoolProperty(name='three', default=True)
+    fedge_WRONG_AREA = bpy.props.FloatProperty(name="WRONG_AREA", default=0.02, precision=4)
+    
     
 
 class MessageOperator(bpy.types.Operator):
@@ -2722,18 +4152,92 @@ class MessageOperator(bpy.types.Operator):
     def draw(self, context):
         self.layout.label(self.message, icon='BLENDER')
 
-
 def print_error(message):
     bpy.ops.error.message('INVOKE_DEFAULT', 
         type = "Message",
         message = message)   
+        
+def print_error2(message,code_error='None'):
+    print('Error:'+code_error)
+    bpy.ops.error.message('INVOKE_DEFAULT', 
+        type = "Message",
+        message = message)   
+
+class CheredatorModalOperator(bpy.types.Operator):
+    bl_idname = "mesh.modal_cheredator"
+    bl_label = "Cheredator"
+    bl_options = {'REGISTER', 'UNDO'}  
+    steps = bpy.props.IntProperty(options = {'HIDDEN'}) 
+        
+    def execute(self, context):
+        context.scene['cheredator'] = cheredator_fantom(self)
+        return
+    
+    def modal(self, context, event):
+        #context.area.tag_redraw()
+        if event.type == 'WHEELDOWNMOUSE':  
+            self.steps += 1
+            self.execute(context)
+            if not context.scene['cheredator']:
+                self.steps -= 1
+                
+        elif event.type == 'WHEELUPMOUSE':  
+            self.steps = max(self.steps-1,0)
+            self.execute(context)
+        elif event.type == 'LEFTMOUSE':  # Confirm
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            cheredator(self.steps)
+            return {'FINISHED'}
+        elif event.type in ('RIGHTMOUSE', 'ESC') or not context.scene['cheredator']:  # Cancel
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            return {'CANCELLED'}
+ 
+        return {'RUNNING_MODAL'}
+ 
+    def invoke(self, context, event):
+        self.steps = 2
+        
+        ars = (self,)
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(cheredator_fantom, ars, 'WINDOW', 'POST_VIEW')
+        self.execute(context)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+
+# ***********  Autoupdate  ***************
+class ThisScriptUpdateAddon(bpy.types.Operator):
+    """ Update this addon without any browsing and so on. After - press F8 to reload addons """
+    bl_idname = "script.paul_update_addon"
+    bl_label = "Update 1D_script addon"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        script_paths = os.path.normpath(os.path.dirname(__file__))
+        
+        os.curdir = os.path.dirname(os.path.join(script_paths,'addons'))
+        os.chdir(os.curdir)
+
+        try:
+            url = 'http://dl.dropboxusercontent.com/u/59609328/Blender-Rus/1D_Scripts.py'
+            file = urllib.request.urlretrieve(url,os.path.normpath(os.path.join(os.curdir,'1D_Scripts.py')))
+            self.report({'INFO'}, "Reload addons with F8 button")
+        except:
+            self.report({'ERROR'}, "Cannot retrieve file from Internet")
+        return {'FINISHED'}   
 
 
 
 
-classes = [MatExrudeOperator, GetMatsOperator, CrossPolsOperator, SSOperator, SpreadOperator, \
-    AlignOperator, LayoutSSPanel, MessageOperator, \
-    OffsetOperator, paul_managerProps]
+
+
+
+
+
+classes = [eap_op0, eap_op1, eap_op2, \
+    MatExrudeOperator, GetMatsOperator, CrossPolsOperator, SSOperator, SpreadOperator, \
+    AlignOperator, Project3DLoopOperator, BarcOperator, LayoutSSPanel, MessageOperator, \
+    OffsetOperator, MiscOperator, paul_managerProps, ThisScriptUpdateAddon, \
+    CheredatorModalOperator, D1_fedge]
 
 
 addon_keymaps = []  
