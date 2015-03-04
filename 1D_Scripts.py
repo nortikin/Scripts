@@ -21,7 +21,7 @@
 bl_info = {
     "name": "1D_Scripts",                     
     "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design), Nikitron",
-    "version": (0, 7, 1),
+    "version": (0, 7, 5),
     "blender": (2, 7, 3),
     "location": "View3D > Toolbar",
     "category": "Mesh"
@@ -904,6 +904,14 @@ def mirrorside():
         bm.free() 
         
 
+def getorient():
+    obj = bpy.context.active_object
+    if obj.type!='MESH':
+        return False
+    bpy.ops.transform.create_orientation(name='1DTEMP', use=True, overwrite=True)
+    bpy.context.space_data.show_manipulator = True
+
+
 def main_align_object(axe='X',project='XY'):
     obj_res = bpy.context.active_object
     if obj_res.type=='MESH':
@@ -1265,8 +1273,10 @@ def main_ss(context):
 
 def main_offset(x):
     mode_obj=bpy.context.mode=='OBJECT'
+    mode_obj2 = bpy.context.mode
     bpy.ops.object.mode_set(mode='OBJECT')
-    bpy.ops.object.mode_set(mode='EDIT') 
+    if mode_obj2=='EDIT_MESH':
+        bpy.ops.object.mode_set(mode='EDIT') 
     
     config = bpy.context.window_manager.paul_manager
     if config.object_name_store == '':
@@ -1284,7 +1294,7 @@ def main_offset(x):
             vec *= x
         me = obj.data
         
-        if not mode_obj:
+        if mode_obj2=='EDIT_MESH':
             bm_act = bmesh.new()
             bm_act.from_mesh(me) 
             check_lukap(bm_act)
@@ -3204,6 +3214,26 @@ def matsPurgeout():
              if i not in mat_slots:
                  bpy.context.object.active_material_index = i
                  bpy.ops.object.material_slot_remove()
+
+
+def matchProp():
+    cont = bpy.context
+    obj = cont.active_object
+    pps_ = dir(obj)
+    pps = [p for p in pps_ if p.find('show_')==0]
+    wpps={}
+    typ = obj.type
+    for p in pps:
+        if hasattr(obj,p):
+            wpps[p]=getattr(obj,p)
+        
+    for o in cont.selected_objects:
+        if obj is o: continue
+        if o.type != typ: continue
+        
+        for p in wpps:
+            if hasattr(o,p):
+                 setattr(o,p,wpps[p])
     
     
 class LayoutSSPanel(bpy.types.Panel):
@@ -3236,8 +3266,18 @@ class LayoutSSPanel(bpy.types.Panel):
         
         layout = self.layout
         col = layout.column(align=True)
-        col.operator("mesh.simple_scale_operator", text='XYcollapse')
-        
+        split = col.split(percentage=0.15)
+        if lt.disp_coll:
+            split.prop(lt, "disp_coll", text="", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_coll", text="", icon='RIGHTARROW')
+        split.operator("mesh.simple_scale_operator", text='XYcollapse').type_op=0
+        if lt.disp_coll:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("mesh.simple_scale_operator", text='Get Orientation').type_op=1
+            
         split = col.split(percentage=0.15)
         if lt.display:
             split.prop(lt, "display", text="", icon='DOWNARROW_HLT')
@@ -3477,6 +3517,8 @@ class LayoutSSPanel(bpy.types.Panel):
         if lt.disp_misc:
             box = col.column(align=True).box().column()
             col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("object.misc", text='MatchProp').type_op=13
             row = col_top.row(align=True)
             row.operator("object.misc", text='Mats all to active').type_op=8
             row = col_top.row(align=True)
@@ -3755,12 +3797,17 @@ class SSOperator(bpy.types.Operator):
     bl_label = "SScale operator"
     bl_options = {'REGISTER', 'UNDO'} 
     
+    type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
-        main_ss(context)
+        if self.type_op == 1:
+            getorient()
+        else:
+            main_ss(context)
         return {'FINISHED'}
 
 
@@ -3873,6 +3920,8 @@ class MiscOperator(bpy.types.Operator):
             matsUnclone()
         elif self.type_op==12:
             matsPurgeout()
+        elif self.type_op==13:
+            matchProp()
         return {'FINISHED'}
 
 
@@ -4121,7 +4170,8 @@ class paul_managerProps(bpy.types.PropertyGroup):
     disp_barc = bpy.props.BoolProperty(name = 'disp_barc', default = False)
     disp_misc = bpy.props.BoolProperty(name = 'disp_misc', default = False)
     disp_eap = bpy.props.BoolProperty(name = 'disp_eap', default = False)
-    disp_fedge = bpy.props.BoolProperty(name = 'disp_eap', default = False)
+    disp_fedge = bpy.props.BoolProperty(name = 'disp_fedge', default = False)
+    disp_coll = bpy.props.BoolProperty(name = 'disp_coll', default = False)
     
     fedge_verts = BoolProperty(name='verts', default=True)
     fedge_edges = BoolProperty(name='edges', default=True)
@@ -4129,7 +4179,6 @@ class paul_managerProps(bpy.types.PropertyGroup):
     fedge_empty = BoolProperty(name='empty', default=True)
     fedge_three = BoolProperty(name='three', default=True)
     fedge_WRONG_AREA = bpy.props.FloatProperty(name="WRONG_AREA", default=0.02, precision=4)
-    
     
 
 class MessageOperator(bpy.types.Operator):
