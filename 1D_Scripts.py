@@ -21,7 +21,7 @@
 bl_info = {
     "name": "1D_Scripts",                     
     "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design), Nikitron",
-    "version": (0, 7, 5),
+    "version": (0, 7, 6),
     "blender": (2, 7, 3),
     "location": "View3D > Toolbar",
     "category": "Mesh"
@@ -2549,6 +2549,13 @@ def getMats(context):
     list_z = [v.co.z for v in me.vertices if v.select]
     list_z = list(set(list_z))
     list_z.sort()
+    tz = list_z[0]
+    tmp_z = [tz]
+    for lz in list(list_z)[1:]:
+        if round(abs(lz-tz),4)>maloe:
+            tmp_z.append(lz)
+            tz = lz
+    list_z = tmp_z
     
     bpy.ops.mesh.select_mode(type='FACE')
     list_f = [p.index for p in me.polygons if p.select]
@@ -2563,8 +2570,7 @@ def getMats(context):
                         black_list.append(p)
                         break
     bpy.ops.mesh.select_mode(type='VERT')
-    
-    
+
 
 
 def main_matExtrude(context):
@@ -2587,7 +2593,7 @@ def main_matExtrude(context):
             return selected_verts 
         
         
-    def find_connected_verts(me, found_index, not_list):  
+    def find_connected_verts2(me, found_index, not_list):  
         edges = me.edges  
         connecting_edges = [i for i in edges if found_index in i.vertices[:]]  
         if len(connecting_edges) == 0: 
@@ -2603,36 +2609,47 @@ def main_matExtrude(context):
             return connected_verts  
         
         
-    def find_all_connected_verts(me, active_v, not_list=[], step=0):
+    def find_all_connected_verts2(me, active_v, not_list=[], step=0):
         vlist = [active_v]
         not_list.append(active_v)
         step+=1
-        list_v_1 = find_connected_verts(me, active_v, not_list)
+        list_v_1 = find_connected_verts2(me, active_v, not_list)
         
         for v in list_v_1:
-            list_v_2 = find_all_connected_verts(me, v, not_list, step) 
+            list_v_2 = find_all_connected_verts2(me, v, not_list, step) 
             vlist += list_v_2
                      
         return vlist  
-        
     
     
     bm = bmesh.new()
     bm.from_mesh(me)
     check_lukap(bm)
     
-    verts = find_all_connected_verts(me,vert)
+    verts = find_all_connected_verts2(me,vert,not_list=[], step=0)
+    vert_ = find_extreme_select_verts(me, verts)
+    vert = vert_[0]
+    verts = find_all_connected_verts2(me,vert,not_list=[], step=0)
+    
     vts = [bm.verts[vr] for vr in verts]
     face_build = []
     face_build.extend(verts)
     fl = len(bm.verts)+1
+    
+    tz = list_z[0]
+    tmp_lz = [z-tz for z in list_z]
+    list_z = tmp_lz
+    
+    z_nul = vts[0].co.z
     for zidx,z in enumerate(list_z):
         vts_tmp = []
+        matz = mats_idx[min(zidx, len(mats_idx)-1)]
+        
         for i,vs in enumerate(vts[:-1]):
             vco1 = vs.co
             vco2 = vts[i+1].co
-            vco1.z = z
-            vco2.z = z
+            vco1.z = z+z_nul
+            vco2.z = z+z_nul
             if i==0:
                 v1 = bm.verts.new(vco1)
                 face_build.append(len(bm.verts)-1)
@@ -2641,7 +2658,9 @@ def main_matExtrude(context):
             v2 = bm.verts.new(vco2)
             face_build.append(len(bm.verts)-1)
             f = bm.faces.new([vs,v1,v2,vts[i+1]])
-            f.material_index = mats_idx[min(zidx, len(mats_idx)-1)]
+            #check_lukap(bm)
+            f.material_index = matz
+            
             if i==0:
                 vts_tmp.append(v1)
             vts_tmp.append(v2)
