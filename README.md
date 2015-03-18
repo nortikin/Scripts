@@ -33,6 +33,8 @@ Viewer_hight.py - цифровое обозначение высот
 
 anim_pencil.py - анимирует нарисованное карандашом. http://www.youtube.com/watch?v=Cpnv6feClFQ
 
+addon_add_point.py - добавляет точку в список Shift+A -> Mesh. Удобно в моделировании.
+
 for_export_AssettoCorsa.py - дополняет экспорт материалами
 
 materials.py - копирует материалы одного объекта на другой через JSON-файл
