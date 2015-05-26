@@ -21,7 +21,7 @@
 bl_info = {
     "name": "1D_Scripts",                     
     "author": "Alexander Nedovizin, Paul Kotelevets aka 1D_Inc (concept design), Nikitron",
-    "version": (0, 7, 6),
+    "version": (0, 7, 14),
     "blender": (2, 7, 3),
     "location": "View3D > Toolbar",
     "category": "Mesh"
@@ -35,6 +35,9 @@ from mathutils.geometry import intersect_line_plane, intersect_point_line
 from math import sin, cos, pi, sqrt, degrees
 import os, urllib
 from bpy.props import BoolProperty
+from bpy_extras.io_utils import ExportHelper
+from bpy.types import Operator
+import time 
 
 
 list_z = []
@@ -908,8 +911,17 @@ def getorient():
     obj = bpy.context.active_object
     if obj.type!='MESH':
         return False
+    
+    space_data = bpy.context.space_data
+    trans_ori = 'GLOBAL'
+    if hasattr(space_data,'transform_orientation'):
+        trans_ori = space_data.transform_orientation
+    
     bpy.ops.transform.create_orientation(name='1DTEMP', use=True, overwrite=True)
-    bpy.context.space_data.show_manipulator = True
+    if trans_ori=='1DTEMP':
+        bpy.context.space_data.show_manipulator = not bpy.context.space_data.show_manipulator
+    else:
+        bpy.context.space_data.show_manipulator = True
 
 
 def main_align_object(axe='X',project='XY'):
@@ -1247,6 +1259,10 @@ def main_spread(context, mode, influe):
 def main_ss(context):
     obj = bpy.context.active_object
     me = obj.data
+    space_data = bpy.context.space_data
+    trans_ori = 'GLOBAL'
+    if hasattr(space_data,'transform_orientation'):
+        trans_ori = space_data.transform_orientation
     
     bpy.ops.object.mode_set(mode='OBJECT') 
     bpy.ops.object.mode_set(mode='EDIT') 
@@ -1255,6 +1271,7 @@ def main_ss(context):
     if vs_idx:
         x_coos = [v.co.x for v in me.vertices if v.index in vs_idx]
         y_coos = [v.co.y for v in me.vertices if v.index in vs_idx]
+        z_coos = [v.co.z for v in me.vertices if v.index in vs_idx]
         
         min_x = min(x_coos)
         max_x = max(x_coos)
@@ -1262,13 +1279,19 @@ def main_ss(context):
         min_y = min(y_coos)
         max_y = max(y_coos)
         
+        min_z = min(z_coos)
+        max_z = max(z_coos)
+        
         len_x = max_x-min_x
         len_y = max_y-min_y
         
-        if len_y<len_x:
-            bpy.ops.transform.resize(value=(1,0,1), constraint_axis=(False,True,False))
+        if trans_ori=='1DTEMP':
+              bpy.ops.transform.resize(value=(1,1,0), constraint_axis=(False,False,True), constraint_orientation=trans_ori)
         else:
-            bpy.ops.transform.resize(value=(0,1,1), constraint_axis=(True,False,False))
+            if len_y<len_x:
+                bpy.ops.transform.resize(value=(1,0,1), constraint_axis=(False,True,False), constraint_orientation=trans_ori)
+            else:
+                bpy.ops.transform.resize(value=(0,1,1), constraint_axis=(True,False,False), constraint_orientation=trans_ori)
 
 
 def main_offset(x):
@@ -1338,6 +1361,74 @@ def main_offset(x):
             if config.shift_local:
                 obj.matrix_world*=mat_loc
                 
+
+def main_rotor(angle_):
+    mode_obj=bpy.context.mode=='OBJECT'
+    mode_obj2 = bpy.context.mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+    if mode_obj2=='EDIT_MESH':
+        bpy.ops.object.mode_set(mode='EDIT') 
+    
+    config = bpy.context.window_manager.paul_manager
+    if config.object_name_store == '':
+        print_error2('Stored key is required', '01 rotor 3D')
+        return False
+    
+    obj = bpy.context.active_object
+    obj_cone = bpy.data.objects[config.object_name_store]
+    if obj:
+        center = mathutils.Vector(config.rotor3d_center)
+        axis_ = mathutils.Vector(config.rotor3d_axis)
+        
+        me = obj.data
+        
+        if mode_obj2=='EDIT_MESH':
+            bm_act = bmesh.new()
+            bm_act.from_mesh(me) 
+            check_lukap(bm_act)
+            
+            verts_act = find_index_of_selected_vertex(me)
+            vts_all = [v for v in bm_act.verts if v.index in verts_act]
+            edg_all = [e for e in bm_act.edges if e.verts[0].index in verts_act and \
+                                                  e.verts[1].index in verts_act]
+            fcs_all = [f for f in bm_act.faces if f.select==True]
+            geom_ = vts_all+edg_all+fcs_all
+                
+            if config.rotor3d_copy:
+                ret = bmesh.ops.spin(bm_act, geom=geom_, cent=center, \
+                   space=mathutils.Matrix(), axis=axis_, angle=angle_, steps=1, use_duplicate=True)
+                for v in bm_act.verts:
+                    v.select_set(False)
+                bm_act.select_flush(False)
+                for v in ret['geom_last']:
+                    v.select=True
+            else:
+                mat_rot = mathutils.Matrix.Rotation(angle_, 4, axis_)
+                bmesh.ops.rotate(bm_act, cent=center, verts=vts_all, \
+                    matrix=mat_rot, space=mathutils.Matrix())
+                
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bm_act.to_mesh(me)
+            bm_act.free()
+            bpy.ops.object.mode_set(mode='EDIT') 
+        else:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            axis_ = axis_ * obj_cone.matrix_world 
+            center = obj_cone.matrix_world * center
+            loc = center-obj.location
+            mat_loc = mathutils.Matrix.Translation(loc)
+            mat_loc2 = mathutils.Matrix.Translation(-loc)
+            mat_rot = mathutils.Matrix.Rotation(angle_, 4, axis_)
+            mat_rot2 = obj.rotation_euler.copy()
+            loc_, rot_, sca_ = obj.matrix_world.decompose()
+            rot_inv = rot_.to_matrix().to_4x4().inverted()
+            
+            obj.matrix_world *= rot_inv
+            #obj.rotation_euler = mathutils.Euler((0,0,0),'XYZ')
+            #bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+            mat_out = mat_loc * mat_rot * mat_loc2
+            obj.matrix_world = obj.matrix_world * mat_out * rot_.to_matrix().to_4x4()
+            
                 
 def GetDistToCursor():
     mode = bpy.context.mode
@@ -1380,6 +1471,84 @@ def GetStoreVecLength():
     vec = mathutils.Vector(config.vec_store)
     return vec.length
 
+
+def GetStoreVecAngle():
+    bpy.ops.object.editmode_toggle()
+    bpy.ops.object.editmode_toggle()
+    
+    obj = bpy.context.active_object
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)  
+    result = True
+    check_lukap(bm)
+    
+    obj_name = obj.name
+    config = bpy.context.window_manager.paul_manager
+    active_edge, el = bm_vert_active_get(bm)
+    old_edge1 = config.active_edge1_store
+    old_edge2 = config.active_edge2_store
+    old_name = config.object_name_store
+    old_step_angle = config.step_angle
+    
+    if active_edge != None and el=='E':
+        config.object_name_store = obj_name
+        config.active_edge1_store = active_edge
+        Edges = mesh.edges
+        verts = bm.edges[active_edge].verts
+        v0 = verts[0].index
+        v1 = verts[1].index
+        edges_idx = [i.index for i in Edges \
+            if i.select and i.index!=active_edge and \
+            (v1 in i.vertices[:] or v0 in i.vertices[:]) ] 
+        if edges_idx:
+            config.active_edge2_store = edges_idx[0]
+            l_ed2 = [Edges[edges_idx[0]].vertices[0], Edges[edges_idx[0]].vertices[1]]
+            (v1, v0) = (v0, v1) if v0 in l_ed2 else (v1, v0)
+            l_ed2.pop(l_ed2.index(v1))
+            v2 = l_ed2[0]
+            v0_ = bm.verts[v0].co 
+            v1_ = bm.verts[v1].co
+            v2_ = bm.verts[v2].co
+            config.step_angle = (v0_-v1_).angle(v2_-v1_,0)
+            config.rotor3d_center = v1_
+            config.rotor3d_axis = mathutils.geometry.normal(v0_,v1_,v2_)
+            print('edge mode',obj_name)
+            return True
+        
+    if active_edge != None and el=='V':
+        active_vert = active_edge
+        config.object_name_store = obj_name
+        
+        v2_l = find_all_connected_verts(mesh, active_vert,[],0)
+        control_vs = find_connected_verts_simple(mesh, active_vert)
+        if len(v2_l)>2 and len(control_vs)==1:
+            v1 = v2_l.pop(1)
+            edges_idx = []
+            for v2 in v2_l[:2]:
+                edges_idx.extend([i.index for i in mesh.edges \
+                    if v1 in i.vertices[:] and v2 in i.vertices[:]] )
+                
+            if len(edges_idx)>1:
+                config.active_edge1_store = edges_idx[0]
+                config.active_edge2_store = edges_idx[1]
+                v0_ = bm.verts[active_vert].co
+                v1_ = bm.verts[v1].co
+                v2_ = bm.verts[v2].co
+                config.step_angle = (v0_-v1_).angle(v2_-v1_,0)
+                config.rotor3d_center = v1_
+                config.rotor3d_axis = mathutils.geometry.normal(v0_,v1_,v2_)
+                return True
+    
+    
+    config.object_name_store = ''
+    config.active_edge1_store = -1
+    config.active_edge2_store = -1
+    config.step_angle = 0   
+    print_error2('Side is undefined', '01 GetStoreVecAngle')
+    
+    bm.free()   
+    
 
 def select_v_on_plane():
     config = bpy.context.window_manager.paul_manager
@@ -3254,6 +3423,132 @@ def matchProp():
             if hasattr(o,p):
                  setattr(o,p,wpps[p])
     
+
+############## PlyCams Render #################
+class ExportSomeData(Operator, ExportHelper):
+    """This appears in the tooltip of the operator and in the generated docs"""
+    bl_idname = "export_test.some_data"  # important since its how bpy.ops.import_test.some_data is constructed
+    bl_label = "Export Some Data"
+
+    # ExportHelper mixin class uses this
+    filename_ext = ""
+
+    def execute(self, context):
+        return render_me(self.filepath)
+    
+
+def render_me(filepath):
+    sceneName = bpy.context.scene.name    
+    glob_res = [bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y] 
+    
+    bpy.data.scenes[sceneName].render.filepath = filepath
+    if not os.path.exists(filepath):
+        os.mkdir(filepath)
+    outputfile_s = os.path.join(filepath, 'stat.txt')
+    with open(outputfile_s, 'w') as w_file:
+        w_file.write('Batch stats:\n'+'_________________________________\n')
+    
+    
+    camsi = []
+    progress = 0
+    sline = ''
+    backet_x = bpy.context.scene.render.tile_x
+    backet_y = bpy.context.scene.render.tile_y
+    sq_backet = backet_x*backet_y
+    rp = bpy.context.scene.render.resolution_percentage
+    for cam in bpy.data.objects: 
+        if ( cam.type =='CAMERA' and not cam.hide_render): 
+            flag = False
+            res = cam.data.name.split('(')
+            res_x = glob_res[0]
+            res_y = glob_res[1]
+            if len(res)==2:
+                res = res[1].split(')')
+                if len(res)==2:
+                    res = res[0].split('+')
+                    if len(res)==2:
+                        res_x = int(res[0])
+                        res_y = int(res[1])
+                        flag = True
+                        
+            camsi.append((res_x,res_y))
+            p_tmp = res_x * res_y
+            p_tmp_scale = round(p_tmp*rp/100)
+            progress += p_tmp
+            if flag:
+                sline = sline + cam.name +' | '+str(res_x)+'x'+str(res_y)+' | '+ \
+                    str(round(res_x*rp/100))+'x'+str(round(res_y*rp/100))+' | '+ \
+                    str(round(p_tmp_scale/sq_backet))+'\n'
+            else:
+                sline = sline + cam.name +' | default | '+ \
+                    str(round(res_x*rp/100))+'x'+str(round(res_y*rp/100))+' | '+ \
+                    str(round(p_tmp_scale/sq_backet))+'\n'
+            
+    
+    with open(outputfile_s, 'a') as w_file:
+        w_file.write('Total resolution = '+str(round(math.sqrt(progress)))+'x'+str(round(math.sqrt(progress)))+ \
+            ' ('+str(round(math.sqrt(progress)*rp/100))+'x'+str(round(math.sqrt(progress)*rp/100))+')'+'\n')
+        w_file.write('Default Resolution = '+str(glob_res[0])+'x'+str(glob_res[1])+' ('+str(rp)+'%)'+'\n')
+        w_file.write('Tiles = '+str(backet_x)+'x'+ str(backet_y)+'\n')
+        w_file.write('Total tiles = '+str(round(progress*rp/(sq_backet*100)))+'\n\n')
+        w_file.write('Cameras:\n'+'Name | resolution | scaled ('+str(rp)+'%) | tiles\n'+ \
+        '________________________________________\n')
+        w_file.write(sline)
+        
+        
+    outputfile = os.path.join(filepath, 'log.txt')
+    with open(outputfile, 'w') as w_file:
+        w_file.write('Cameras:\n'+'Name | resolution | scaled ('+str(rp)+'%) | progress % | remaining time | elapsed time\n'+ \
+        '_____________________________________________________________________________\n')
+        
+    p_tmp = 0
+    time_start = time.time()   
+    i = 0
+    for cam in bpy.data.objects: 
+        if ( cam.type =='CAMERA' and not cam.hide_render): 
+            bpy.data.scenes[sceneName].camera = cam 
+            bpy.context.scene.render.resolution_x = camsi[i][0]
+            bpy.context.scene.render.resolution_y = camsi[i][1]
+            bpy.data.scenes[sceneName].render.filepath = filepath+'\\'+cam.name
+            bpy.ops.render.render(animation=False, write_still = True) 
+            p_tmp += camsi[i][0]*camsi[i][1]
+            proc = max(round(p_tmp*100/progress),1)
+            r_time = time.time() - time_start
+            time_tmp = r_time*(100-proc)/proc
+            time_tmp = round(time_tmp)
+            
+            s_rt = time.strftime('%H:%M:%S',time.gmtime(r_time))
+            s_lt = time.strftime('%H:%M:%S',time.gmtime(time_tmp))
+            with open(outputfile, 'a') as w_file:
+                w_file.write(cam.name +' | '+str(camsi[i][0])+'x'+str(camsi[i][1])+' | '+ \
+                    str(round(camsi[i][0]*rp/100))+'x'+str(round(camsi[i][1]*rp/100))+' | '+ \
+                    str(proc)+' | '+s_lt+' | '+s_rt+'\n')
+            i += 1
+    
+    bpy.context.scene.render.resolution_x = glob_res[0]
+    bpy.context.scene.render.resolution_y = glob_res[1]
+    #print('Done!') 
+    #print(bpy.data.scenes[sceneName].render.filepath)
+    return {'FINISHED'}
+    
+                                         
+class RenderMe(bpy.types.Operator):
+   """Cams render"""
+   bl_idname = "scene.render_me"
+   bl_label = "Render Me"
+   bl_options = {'REGISTER', 'UNDO'}
+
+   def execute(self, context):
+        bpy.ops.export_test.some_data('INVOKE_DEFAULT')
+        return {'FINISHED'}
+
+       
+def menu_func(self, context):
+    self.layout.operator(RenderMe.bl_idname)
+def menu_func_export(self, context):
+    self.layout.operator(ExportSomeData.bl_idname, text="Cams Render!")
+############# End PolyCams Render ################
+
     
 class LayoutSSPanel(bpy.types.Panel):
     def axe_select(self, context):
@@ -3356,6 +3651,33 @@ class LayoutSSPanel(bpy.types.Panel):
             row = col_top.row(align=True)
             row.prop(context.scene,'ProjectsProperty', text = 'Projection')
         
+        split = col.split()
+        if lt.disp_3drotor:
+            split.prop(lt, "disp_3drotor", text="3D Rotor", icon='DOWNARROW_HLT')
+        else:
+            split.prop(lt, "disp_3drotor", text="3D Rotor", icon='RIGHTARROW')
+            
+        if lt.disp_3drotor:
+            box = col.column(align=True).box().column()
+            col_top = box.column(align=True)
+            row = col_top.row(align=True)
+            row.operator("mesh.rotor_operator", text = 'Store key').type_op = 1
+            row = col_top.row(align=True)
+            split = col_top.split(percentage=0.5)
+            left_op = split.operator("mesh.rotor_operator", text="", icon='TRIA_LEFT')
+            left_op.type_op = 0
+            left_op.sign_op = -1
+            right_op = split.operator("mesh.rotor_operator", text="", icon='TRIA_RIGHT')
+            right_op.type_op = 0
+            right_op.sign_op = 1
+            row = col_top.row(align=True)
+            if context.mode == 'EDIT_MESH':
+                row.prop(lt,"rotor3d_copy", text="Copy")
+            else:
+                row.prop(lt, "rotor3d_instance", text='Instance')
+                row = col_top.row(align=True)
+                row.prop(lt,"rotor3d_copy", text="Copy")
+            
         split = col.split()
         if lt.display_offset:
             split.prop(lt, "display_offset", text="SideShift", icon='DOWNARROW_HLT')
@@ -3586,6 +3908,9 @@ class LayoutSSPanel(bpy.types.Panel):
                 row.operator('eap.op2_id', text = 'Extrude')
         
         split = col.split()
+        split.operator("scene.render_me", text='Render')
+        
+        split = col.split()
         split.operator("script.paul_update_addon", text = 'Auto update')
             
 
@@ -3778,6 +4103,18 @@ class D1_fedge(bpy.types.Operator):
         elif bpy.context.mode == 'EDIT_MESH':
             self.select_loose_edit()
         return {'FINISHED'}
+
+
+class DisableDubleSideOperator(bpy.types.Operator):
+    """Disable show duble side all meshes"""
+    bl_idname = "mesh.disable_duble_sided"
+    bl_label = "DDDisableDoubleSided"
+    bl_options = {'REGISTER', 'UNDO'} 
+
+    def execute(self, context):
+        for mesh in bpy.data.meshes:
+            mesh.show_double_sided=False
+        return {'FINISHED'}    
 
         
 class MatExrudeOperator(bpy.types.Operator):
@@ -4131,6 +4468,120 @@ class OffsetOperator(bpy.types.Operator):
         self.sign_op = 1
         return {'FINISHED'}
 
+
+class RotorOperator(bpy.types.Operator):
+    bl_idname = "mesh.rotor_operator"
+    bl_label = "Rotor operator"
+    bl_options = {'REGISTER', 'UNDO'} 
+    
+    type_op = bpy.props.IntProperty(name = 'type_op', default = 0, options = {'HIDDEN'})
+    sign_op = bpy.props.IntProperty(name = 'sign_op', default = 1, options = {'HIDDEN'})
+    
+    
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        config = bpy.context.window_manager.paul_manager
+        if self.type_op==0:     # move left / right
+            ao=bpy.context.active_object.name
+            l_obj=[]
+            for obj_a in bpy.context.selected_objects:
+                l_obj.append(obj_a.name)
+            if config.rotor3d_copy:
+                if bpy.context.mode=='OBJECT':
+                    for obj_a in bpy.context.selected_objects:
+                        bpy.context.scene.objects.active = obj_a
+                        bpy.ops.object.select_all(action='DESELECT')
+                        bpy.ops.object.select_pattern(pattern=obj_a.name)
+                        bpy.ops.object.duplicate(linked=config.rotor3d_instance)
+                        
+                    for obj_a_name in l_obj:
+                        bpy.context.scene.objects[obj_a_name].select=True
+                    bpy.context.scene.objects.active = bpy.data.objects[ao]
+                    
+                elif bpy.context.mode=='EDIT_MESH':                    
+                    bpy.ops.mesh.duplicate()
+                
+            x = config.step_angle * self.sign_op
+            if bpy.context.mode=='OBJECT':
+                for obj_a_ in l_obj:
+                    obj_a = bpy.context.scene.objects[obj_a_]
+                    bpy.context.scene.objects.active = obj_a
+                    bpy.ops.object.select_all(action='DESELECT')
+                    bpy.ops.object.select_pattern(pattern=obj_a.name)
+                    main_rotor(x)
+                    
+                for obj_a_name in l_obj:
+                    bpy.context.scene.objects[obj_a_name].select=True
+                bpy.context.scene.objects.active = bpy.data.objects[ao]
+            else:
+                main_rotor(x)
+        
+        elif self.type_op==1:   # get angle
+            GetStoreVecAngle()
+        
+        elif self.type_op==2:                   # copy
+            copy_offset()
+        
+        elif self.type_op==3: 
+            if config.shift_copy:
+                if bpy.context.mode=='OBJECT':
+                    l_obj=[]
+                    ao=bpy.context.active_object.name
+                    for obj_a in bpy.context.selected_objects:
+                        l_obj.append(obj_a.name)
+                    for obj_a in bpy.context.selected_objects:
+                        bpy.context.scene.objects.active = obj_a
+                        bpy.ops.object.duplicate(linked=config.instance)
+                        bpy.ops.object.select_all(action='DESELECT')
+                        bpy.ops.object.select_pattern(pattern=obj_a.name)
+                    for obj_a_name in l_obj:
+                        bpy.context.scene.objects[obj_a_name].select=True
+                    bpy.context.scene.objects.active = bpy.data.objects[ao]
+                    
+                elif bpy.context.mode=='EDIT_MESH':                    
+                    bpy.ops.mesh.duplicate()
+            
+            vec = GetDistToCursor()
+            config.object_name_store = bpy.context.active_object.name
+            config.vec_store = vec
+            config.step_len = vec.length
+            x = config.step_len
+            if bpy.context.mode=='OBJECT':
+                ao=bpy.context.active_object.name
+                for obj_a in bpy.context.selected_objects:
+                    bpy.context.scene.objects.active = obj_a
+                    main_offset(x)
+                bpy.context.scene.objects.active = bpy.data.objects[ao]
+            else:
+                main_offset(x)
+                
+            config.step_len = GetStoreVecLength()
+        
+        elif self.type_op==4:
+            act_obj = bpy.context.active_object
+            bpy.ops.object.duplicate(linked=config.instance)
+            bpy.ops.object.select_all(action='DESELECT')
+            bpy.ops.object.select_pattern(pattern=act_obj.name)
+            bpy.context.scene.objects.active = bpy.data.objects[act_obj.name]
+            
+        else:
+            pass
+            
+        self.type_op = 0
+        self.sign_op = 1
+        return {'FINISHED'}
+    
+    
+    
+    
+    
+    
+    
+
+
 class paul_managerProps(bpy.types.PropertyGroup):
     """
     Fake module like class
@@ -4144,7 +4595,7 @@ class paul_managerProps(bpy.types.PropertyGroup):
     spread_x = bpy.props.BoolProperty(name = 'spread_x', default = False)
     spread_y = bpy.props.BoolProperty(name = 'spread_y', default = False)
     spread_z = bpy.props.BoolProperty(name = 'spread_z', default = True)
-    relation = bpy.props.BoolProperty(name = 'relation', default = False)
+    relation = bpy.props.BoolProperty(name = 'relation', default = True)
     edge_idx_store = bpy.props.IntProperty(name="edge_idx_store")   
     object_name_store = bpy.props.StringProperty(name="object_name_store") 
     object_name_store_v = bpy.props.StringProperty(name="object_name_store_v") 
@@ -4161,12 +4612,18 @@ class paul_managerProps(bpy.types.PropertyGroup):
     variant = bpy.props.IntProperty(name="variant")
     instance = bpy.props.BoolProperty(name="instance")
     flip_match = bpy.props.BoolProperty(name="flip_match")
+    step_angle = bpy.props.FloatProperty(name="step_angle")
     
     shift_lockX = bpy.props.BoolProperty(name = 'shift_lockX', default = False)
     shift_lockY = bpy.props.BoolProperty(name = 'shift_lockY', default = False)
     shift_lockZ = bpy.props.BoolProperty(name = 'shift_lockZ', default = False)
     shift_copy = bpy.props.BoolProperty(name = 'shift_copy', default = False)
     shift_local = bpy.props.BoolProperty(name = 'shift_local', default = False)
+    
+    rotor3d_copy = bpy.props.BoolProperty(name = 'rotor3d_copy', default = False)
+    rotor3d_instance = bpy.props.BoolProperty(name="rotor3d_instance")
+    rotor3d_center = bpy.props.FloatVectorProperty(name="rotor3d_center")
+    rotor3d_axis = bpy.props.FloatVectorProperty(name="rotor3d_axis")
     
     SPLIT = bpy.props.BoolProperty(name = 'SPLIT', default = False)
     inner_clear = bpy.props.BoolProperty(name = 'inner_clear', default = False)
@@ -4191,6 +4648,7 @@ class paul_managerProps(bpy.types.PropertyGroup):
     disp_eap = bpy.props.BoolProperty(name = 'disp_eap', default = False)
     disp_fedge = bpy.props.BoolProperty(name = 'disp_fedge', default = False)
     disp_coll = bpy.props.BoolProperty(name = 'disp_coll', default = False)
+    disp_3drotor = bpy.props.BoolProperty(name = 'disp_3drotor', default = False)
     
     fedge_verts = BoolProperty(name='verts', default=True)
     fedge_edges = BoolProperty(name='edges', default=True)
@@ -4302,6 +4760,7 @@ class ThisScriptUpdateAddon(bpy.types.Operator):
 
 
 classes = [eap_op0, eap_op1, eap_op2, \
+    RenderMe, ExportSomeData, RotorOperator, DisableDubleSideOperator, \
     MatExrudeOperator, GetMatsOperator, CrossPolsOperator, SSOperator, SpreadOperator, \
     AlignOperator, Project3DLoopOperator, BarcOperator, LayoutSSPanel, MessageOperator, \
     OffsetOperator, MiscOperator, paul_managerProps, ThisScriptUpdateAddon, \
