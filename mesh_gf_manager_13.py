@@ -297,7 +297,11 @@ class GFManagerPanel(bpy.types.Panel):
         obj = context.object
 
         row = layout.row()
-        row.label(text="Active object is: " + obj.name)
+        if obj:
+            row.label(text="Active object is: " + obj.name)
+        else:
+            row.label(text="No active object")
+            return
         row = layout.row()
         row.prop(obj, "name")
         layout.prop(obj, 'myRad')
