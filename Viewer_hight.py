@@ -5,7 +5,7 @@ bl_info = {
     "author": "Alexander Nedovizin",
     "version": (0, 1, 4),
     "blender": (2, 6, 8),
-    "location": "View3D > Viewer Hights",
+    "location": "View3D > Viewer Heights",
     "category": "3D View"
 }   
 
